@@ -44,16 +44,18 @@ class Message:
     def render(self, highlight: str | None = None, width: int = 0):
         from rich.text import Text
 
+        from .tui import theme
         from .tui.theme import ACCENT, DIM
 
         t = Text()
-        t.append(time.strftime("%H:%M ", time.localtime(self.t)), style=DIM)
-        sender_style = ACCENT if self.kind == "you" else (DIM if self.kind == "ccdash" else "bold")
-        if highlight and self.involves(highlight):
-            sender_style += " underline" if self.kind == "agent" else ""
-        t.append(self.sender, style=sender_style)
+        t.append(theme.fmt_clock(self.t) + " ", style=DIM)
+        def name_style(name: str, base: str) -> str:
+            return f"bold {ACCENT}" if highlight and name == highlight else base
+
+        t.append(self.sender, style=ACCENT if self.kind == "you" else (
+            DIM if self.kind == "ccdash" else name_style(self.sender, "bold")))
         t.append(" → ", style=DIM)
-        t.append(self.to, style="bold" if self.to != "all" else DIM)
+        t.append(self.to, style=DIM if self.to == "all" else name_style(self.to, "bold"))
         if self.queued:
             t.append("  queued", style="yellow")
         elif self.kind == "agent" and self.delivered:

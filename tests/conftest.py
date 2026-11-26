@@ -86,7 +86,7 @@ def sandbox(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home / "claude-config"))
     monkeypatch.setenv("CCDASH_REDUCED_MOTION", "1")
     for var in ("CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN",
-                "CCDASH_AGENT", "CCDASH_STATE", "TMUX"):
+                "CCDASH_AGENT", "CCDASH_STATE", "TMUX", "NO_COLOR", "CCDASH_THEME"):
         monkeypatch.delenv(var, raising=False)
     return home
 

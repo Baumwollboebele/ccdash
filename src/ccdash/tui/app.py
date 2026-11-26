@@ -18,8 +18,11 @@ from textual.widgets import DataTable, Static
 from ..dashboard import Dashboard, Progress
 from ..workspace import Workspace, WorkspaceError
 from .agents_table import AgentsTable
+from .anim import Animator, lerp_hex, pulse_color, spinner_glyph
 from .modals import ConfirmDeleteModal, HelpModal, MessageModal, NewAgentModal, TextInputModal
+from .network import CommsView, NetworkView
 from .panels import ConflictsPanel, DetailsPanel, MessagesPanel
+from . import theme
 from .theme import ACCENT, DIM, THEMES, pick_theme, reduced_motion
 
 MAIN_ACTIONS = {"new", "stop", "restart", "attach", "peek", "talk", "broadcast", "merge", "diff", "delete", "filter",
@@ -54,6 +57,12 @@ class CCDashApp(App):
         self.peek_lines: list[str] | None = None
         self._booted = False
         self._watch_stop = threading.Event()
+        self.motion = Animator(self, enabled=self.animate)
+        self.view_mode = "details"  # details | network   (comms is a separate full-screen class)
+        self._prev: dict[str, tuple[int, str]] = {}
+        self._seen_messages = 0
+        self._conflict_rows: list = []
+        self._conflict_keys: set = set()
         for theme in THEMES:  # before the stylesheet is parsed: it uses $ccdash-bg / $ccdash-dim
             self.register_theme(theme)
         self.theme = pick_theme()
@@ -68,12 +77,14 @@ class CCDashApp(App):
             with Container(id="details-panel", classes="panel") as p:
                 p.border_title = "Details"
                 yield DetailsPanel(id="details")
+                yield NetworkView(id="network")
             with Container(id="messages-panel", classes="panel") as p:
                 p.border_title = "Messages"
                 yield MessagesPanel(id="messages")
         with Container(id="conflicts-panel", classes="panel") as p:
             p.border_title = "Conflicts"
             yield ConflictsPanel(id="conflicts")
+        yield CommsView(id="comms")
         yield Static(id="footer")
 
     @property
@@ -125,6 +136,8 @@ class CCDashApp(App):
 
     def on_unmount(self) -> None:
         self._watch_stop.set()
+        self.motion.enabled = False
+        self.motion.ensure()
 
     def request_refresh(self) -> None:
         """Coalesce refresh requests: never more than one runtime refresh in flight."""
@@ -137,6 +150,7 @@ class CCDashApp(App):
     def _refresh_done(self) -> None:
         self._refreshing = False
         self.render_all()
+        self._booted = True
         self._toast_transitions()
         if self.dash.git_wanted:
             self.refresh_git_worker()
@@ -208,17 +222,139 @@ class CCDashApp(App):
 
     # -- rendering ----------------------------------------------------------------------
     def render_all(self) -> None:
-        self._render_header()
         views = self.dash.sorted_views()
+        self._detect_effects(views)
+        self._render_header()
         self.table.update_views(views, self.status_kw_for)
         self._render_details()
         self._render_messages()
         self._render_conflicts()
+        self._render_views(views)
         self._render_footer()
+        self.motion.ensure()
 
     def status_kw_for(self, v) -> dict:
-        return {"frame": self.frame, "animate": self.animate, "progress": self.dash.progress.get(v.name)}
+        kw: dict = {"progress": self.dash.progress.get(v.name)}
+        if not self.animate:
+            return kw
+        if v.status in ("working", "running", "starting") and not v.stale:
+            kw["glyph"] = spinner_glyph()
+        if v.status == "needs_input":
+            kw["pulse"] = pulse_color()
+        if self.motion.active(("ahead", v.name)):
+            kw["flash"] = True
+        p = self.motion.progress(("merged", v.name))
+        if p is not None:
+            kw["fade"] = lerp_hex("#9a9a9a", "#5f87ff", p)
+        return kw
 
+    # -- animation ----------------------------------------------------------------------
+    def anything_moving(self) -> bool:
+        if not self.animate:
+            return False
+        for v in self.dash.views.values():
+            if v.status in ("working", "running", "starting", "needs_input", "setup") and not v.stale:
+                return True
+        if self.dash.progress:
+            return True
+        if self.view_mode == "network" and self.network.flights:
+            return True
+        if self.has_class("view-comms"):
+            return any(t.state == "discussing" for t in getattr(self.comms, "threads", []))
+        return False
+
+    def animate_frame(self) -> None:
+        """One animation tick: redraw only what moves."""
+        from textual.css.query import NoMatches
+
+        try:
+            self._animate_frame()
+        except NoMatches:  # the app is closing
+            self.motion.enabled = False
+
+    def _animate_frame(self) -> None:
+        self.frame += 1
+        views = self.dash.sorted_views()
+        moving = [v for v in views if v.status in ("working", "running", "starting", "needs_input", "setup")
+                  or self.motion.active(("ahead", v.name)) or self.motion.active(("merged", v.name))]
+        if moving:
+            self.table.refresh_rows(moving, self.status_kw_for)
+        name = self.selected_name()
+        sel = self.dash.get(name) if name else None
+        if self.view_mode == "details" and sel is not None and sel.status == "working":
+            self._render_details()
+        if any(isinstance(k, tuple) and k[0] == "conflict" for k in self.motion.effects):
+            self._render_conflicts()
+        self._render_views(views)
+
+    def _detect_effects(self, views) -> None:
+        """Start effects for changes worth seeing: commits, merges, new messages."""
+        for v in views:
+            prev = self._prev.get(v.name)
+            if prev is not None:
+                if v.ahead > prev[0]:
+                    self.motion.start(("ahead", v.name), 1.0)
+                if v.merge_state == "merged" and prev[1] != "merged":
+                    self.motion.start(("merged", v.name), 1.2)
+            self._prev[v.name] = (v.ahead, v.merge_state)
+        items = self.dash.messages.items
+        if self._seen_messages and len(items) > self._seen_messages:
+            for m in items[self._seen_messages:]:
+                for to in (m.recipients if m.to in ("all", "*") else [m.to]):
+                    self.add_flight(m.sender, to)
+        self._seen_messages = len(items)
+
+    def add_flight(self, sender: str, to: str) -> None:
+        if self.animate:
+            self.network.add_flight(sender, to)
+            self.motion.start(("flight", sender, to, time.monotonic()), 1.3)
+
+    def red_pairs(self) -> set:
+        if self.dash.conflicts is None:
+            return set()
+        return self.dash.conflicts.red_pairs()
+
+    def show_conflict_rows(self, rows: list) -> None:
+        self._conflict_rows = rows
+        self._render_conflicts()
+        self.motion.ensure()
+
+    @property
+    def network(self) -> NetworkView:
+        return self.query_one("#network", NetworkView)
+
+    @property
+    def comms(self) -> CommsView:
+        return self.query_one("#comms", CommsView)
+
+    def network_text(self) -> str:
+        return self.network.last_text.plain
+
+    def comms_text(self) -> str:
+        return self.comms.list_text()
+
+    def _render_views(self, views) -> None:
+        if self.view_mode == "network":
+            self.network.show(views, self.dash.messages.items, self.red_pairs(), animate=self.animate,
+                              merged_progress=lambda n: self.motion.progress(("merged", n)))
+        if self.has_class("view-comms"):
+            self.comms.show(views, self.dash.messages.items, animate=self.animate, flights=self.network.flights)
+
+    def action_network(self) -> None:
+        self.view_mode = "network" if self.view_mode != "network" else "details"
+        net = self.view_mode == "network"
+        self.network.display = net
+        self.query_one("#details", DetailsPanel).display = not net
+        self.query_one("#details-panel").border_title = "Network" if net else (self.selected_name() or "Details")
+        self.render_all()
+
+    def action_comms(self) -> None:
+        self.toggle_class("view-comms")
+        if self.has_class("view-comms"):
+            self.query_one("#comms-threads").focus()
+        else:
+            self.table.focus()
+        self.render_all()
     def header_text(self) -> str:
         return self._header().plain
 
@@ -236,7 +372,7 @@ class CCDashApp(App):
                 mid.append(" · ", style=DIM)
             zero = part.startswith("0 ")
             mid.append(part, style=DIM if zero and i else st)
-        right = Text(time.strftime("%H:%M"), style=DIM)
+        right = Text(theme.fmt_clock(time.time()), style=DIM)
         width = max(40, self.size.width - 2)
         gap = width - len(left) - len(mid) - len(right)
         pad1 = max(2, gap // 2)
@@ -259,6 +395,8 @@ class CCDashApp(App):
         name = self.selected_name()
         v = self.dash.get(name) if name else None
         panel = self.query_one("#details-panel")
+        if self.view_mode == "network":
+            return
         panel.border_title = name or "Details"
         activity = self.dash.activity.get(name) if (self.dash.activity is not None and name) else None
         self.query_one("#details", DetailsPanel).show(
@@ -276,8 +414,13 @@ class CCDashApp(App):
         self.query_one("#messages", MessagesPanel).show(msgs, highlight=self.selected_name())
 
     def _render_conflicts(self) -> None:
-        rows = self.dash.conflicts.rows if self.dash.conflicts is not None else None
-        self.query_one("#conflicts", ConflictsPanel).show(rows)
+        rows = self.dash.conflicts.rows if self.dash.conflicts is not None else self._conflict_rows
+        if self._booted:  # a collision that appears while you watch slides in with a red flash
+            for r in rows:
+                if r.key not in self._conflict_keys:
+                    self.motion.start(("conflict", r.key), 0.9)
+        self._conflict_keys = {r.key for r in rows}
+        self.query_one("#conflicts", ConflictsPanel).show(rows, progress=self.motion.progress)
 
     # -- selection ------------------------------------------------------------------------
     def selected_name(self) -> str | None:
@@ -484,14 +627,11 @@ class CCDashApp(App):
     def action_filter(self) -> None:
         self._not_yet("Filter")
 
-    def action_network(self) -> None:
-        self._not_yet("The network view")
 
     def action_filemap(self) -> None:
         self._not_yet("The file map")
 
-    def action_comms(self) -> None:
-        self._not_yet("The comms view")
+
 
 
 def run(no_anim: bool = False, cwd: Path | None = None) -> int:

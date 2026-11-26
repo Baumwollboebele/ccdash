@@ -182,3 +182,42 @@ ModalScreen {
 #messages > .option-list--option-disabled {
     color: $ccdash-dim;
 }
+
+#network {
+    display: none;
+    height: 1fr;
+    text-wrap: nowrap;
+}
+
+#comms-top {
+    height: 2fr;
+}
+
+#comms-graph {
+    width: 1fr;
+    height: 100%;
+}
+
+#comms-right {
+    width: 1fr;
+}
+
+#comms-threads {
+    height: 1fr;
+    background: $ccdash-bg;
+}
+
+#comms-threads > .option-list--option-highlighted {
+    background: $ccdash-bg;
+    text-style: bold reverse;
+}
+
+#comms-transcript {
+    height: 1fr;
+}
+
+#comms-timeline {
+    height: auto;
+    max-height: 14;
+    text-wrap: nowrap;
+}

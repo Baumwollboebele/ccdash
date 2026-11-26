@@ -132,13 +132,16 @@ class MessagesPanel(OptionList):
         return "\n".join(m.render().plain for m in self.messages)
 
 class ConflictsPanel(Static):
-    def show(self, rows: list | None, flash: set | None = None) -> None:
+    def show(self, rows: list | None, progress=None) -> None:
         if not rows:
             self.update(Text("No conflicts.", style=DIM))
             return
         t = Text()
         for r in rows:
-            t.append_text(r.render(flash=bool(flash and r.key in flash)))
+            p = progress(("conflict", r.key)) if progress else None
+            flash = p is not None and p < 0.55
+            slide = int((1 - p / 0.35) * 12) if (p is not None and p < 0.35) else 0
+            t.append_text(r.render(flash=flash, slide=slide))
             t.append("\n")
         t.rstrip()
         self.update(t)

@@ -19,23 +19,21 @@ def progress_bar(frac: float, width: int = 4) -> str:
     return "▰" * full + "▱" * (width - full)
 
 
-def status_cell(v: AgentView, frame: int = 0, animate: bool = False, progress=None, pulse: bool = False) -> Text:
+def status_cell(v: AgentView, glyph: str | None = None, pulse: str | None = None, progress=None, **_) -> Text:
     style = STATUS_STYLE.get(v.status, "default")
     label = STATUS_LABEL.get(v.status, v.status)
     if progress is not None and v.status in ("setup", "starting"):
         return Text.assemble((progress_bar(progress.frac), ACCENT), " ", (progress.step, ACCENT))
-    glyph = STATUS_GLYPH.get(v.status, " ")
-    if animate and v.status in ("working", "running") and not getattr(v, "stale", False):
-        glyph = SPINNER[frame % len(SPINNER)]
-    if getattr(v, "stale", False):
+    if v.stale:
         style = DIM
-    if v.status == "needs_input" and pulse:
-        style = f"bold {style}"
-    return Text.assemble((glyph, style), " ", (label, style))
+    if pulse and v.status == "needs_input":
+        style = f"bold {pulse}"
+    return Text.assemble((glyph or STATUS_GLYPH.get(v.status, " "), style), " ", (label, style))
 
-
-def state_cell(v: AgentView) -> Text:
+def state_cell(v: AgentView, fade: str | None = None) -> Text:
     s = v.merge_state
+    if fade and s == "merged":
+        return Text("merged", style=fade)
     if s == "committed":
         return Text(f"+{v.ahead}")
     if s == "dirty":
@@ -89,22 +87,40 @@ class AgentsTable(DataTable):
         if name in self._order:
             self.move_cursor(row=self._order.index(name))
 
-    def render_row(self, v: AgentView, selected: bool, **status_kw) -> dict:
+    def render_row(self, v: AgentView, selected: bool, glyph=None, pulse=None, progress=None, flash=False,
+                   fade=None, **_) -> dict:
         marker = Text("▶ ", style=ACCENT) if selected else Text("  ")
         name_style = "bold" if selected else ("dim" if v.status in ("stopped", "deleted", "untracked") else "default")
+        if fade:
+            name_style = fade
+        elif pulse and v.status == "needs_input":
+            name_style = f"bold {pulse}"
         task = (v.task.splitlines() or [""])[0]
         if len(task) > self.task_width:
             task = task[: self.task_width - 1] + "…"
         return {
             "name": marker + Text(v.name, style=name_style),
-            "status": status_cell(v, **status_kw),
-            "task": Text(task, style=DIM if v.status == "untracked" else "default"),
+            "status": status_cell(v, glyph=glyph, pulse=pulse, progress=progress),
+            "task": Text(task, style=DIM if v.status == "untracked" else (fade or "default")),
             "branch": Text(v.branch, style=DIM),
-            "main": main_cell(v, flash=status_kw.get("flash", False)),
+            "main": main_cell(v, flash=flash),
             "files": Text(str(v.files) if v.branch else "", style="default" if v.files else DIM),
-            "state": state_cell(v),
+            "state": state_cell(v, fade=fade),
         }
 
+    def refresh_rows(self, views: list[AgentView], status_kw_for, columns=("name", "status", "main", "state")) -> None:
+        """Animation frame: re-render only the given rows' animated cells."""
+        sel = self.selected()
+        for v in views:
+            if v.name not in self._order:
+                continue
+            cells = self.render_row(v, selected=v.name == sel, **status_kw_for(v))
+            for key in columns:
+                try:
+                    if self.get_cell(v.name, key) != cells[key]:
+                        self.update_cell(v.name, key, cells[key])
+                except Exception:  # noqa: BLE001
+                    pass
     def update_views(self, views: list[AgentView], status_kw_for) -> None:
         """Re-render rows; rebuild only when the set or order of agents changed."""
         names = [v.name for v in views]

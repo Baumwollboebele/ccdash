@@ -93,3 +93,10 @@ def pick_theme() -> str:
 
 def reduced_motion(no_anim: bool = False) -> bool:
     return no_anim or bool(os.environ.get("NO_COLOR")) or os.environ.get("CCDASH_REDUCED_MOTION") == "1"
+
+
+def fmt_clock(ts: float) -> str:
+    """HH:MM for a timestamp; one place, so snapshot tests can freeze it."""
+    import time
+
+    return time.strftime("%H:%M", time.localtime(ts))
