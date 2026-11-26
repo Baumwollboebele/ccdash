@@ -157,7 +157,7 @@ ccdash reads three sources and owns one state directory. It never parses Claude'
 
 | Source | What it gives | How | Freshness |
 | --- | --- | --- | --- |
-| Claude Code hooks | Status, last tool call, files edited, messages sent and received, needs-input | A settings file passed with `--settings` registers `ccdash hook <event>` for each event, in exec form (`command` + `args`, absolute paths, no shell) and `async: true` except where noted under Hook rules; the hook appends one JSON line | Instant (file watch) |
+| Claude Code hooks | Status, last tool call, files edited, messages sent and received, needs-input | A settings file passed with `--settings` registers the hooks. On Windows every event except SessionStart is an HTTP hook (`type: "http"`) posting to the agent's own `ccdash host` on 127.0.0.1, so no process starts per event. SessionStart, and every event under tmux, is an exec-form command hook (`command` + `args`, absolute paths, no shell) running `ccdash.hook` with `-I -S`, `async: true` except where noted under Hook rules. Either way one JSON line is appended | Instant (file watch) |
 | git | Branch, ahead/behind, dirty files, commits, predicted conflicts | `git worktree list --porcelain`, `git status --porcelain=v2`, `git rev-list --left-right --count`, `git merge-tree --write-tree` | Poll every 10 s, plus after each commit event |
 | tmux | Process alive, live output | `tmux has-session`, `tmux capture-pane -p -S -30` | Poll every 2 s |
 
@@ -251,7 +251,7 @@ ccdash creates the worktree itself and runs plain interactive `claude` inside it
 |  | `WinPtyRunner` (Windows, primary) | `TmuxRunner` (macOS, Linux, WSL) |
 | --- | --- | --- |
 | Keeps the agent alive | A detached `ccdash host <name>` process per agent owns a ConPTY (via `pywinpty`) running `claude` | A tmux session per agent |
-| Survives closing the TUI | Yes: host is started with `DETACHED_PROCESS` + `CREATE_NEW_PROCESS_GROUP` | Yes |
+| Survives closing the TUI | Yes: the host is started through a short-lived intermediate process with `CREATE_NO_WINDOW` + `CREATE_NEW_PROCESS_GROUP` (+ `CREATE_BREAKAWAY_FROM_JOB` when allowed), so its parent is gone and a process-tree kill of the terminal cannot reach it. It runs on the base interpreter (`-I -S`), not the venv launcher, so it is one process | Yes |
 | Peek | Host feeds the ConPTY output into a VT screen emulator and keeps the rendered screen plus 2,000 lines of scrollback, served over a named pipe `\\.\pipe\ccdash-<repo>-<name>`. Claude redraws in place, so raw output lines are not readable. The emulator dependency is still to be approved, see findings | `tmux capture-pane` |
 | Type into the agent (stop, messages) | Write to the host's pipe, which writes to the ConPTY input | `tmux send-keys` |
 | Attach | `cc attach <name>`: puts the PowerShell console in raw VT mode and proxies keys and output through the pipe; `Ctrl+]` detaches. ConPTY output turns on win32-input-mode (`ESC[?9001h`) and focus events (`ESC[?1004h`) in the real terminal, so detach must turn them off again and restore the console mode | `tmux attach`; `Ctrl-b d` detaches |
@@ -262,7 +262,7 @@ On Windows the step lists below read "host" wherever they say "tmux session". Fr
 **Start (`n`, or `cc "task"` from the shell)**
 
 1. Slugify the task into a unique name (rules from the existing script: lowercase, first 4 words, max 30 chars, `-2` suffix on collision).
-2. `git worktree add .claude/worktrees/<name> -b cc/<name> <base>`, where base is the default branch (`origin/HEAD`, fetched if older than 24 h) or `HEAD` if chosen. Before the first one, ccdash adds `.claude/worktrees/` to `.git/info/exclude`, so the main checkout does not show it as untracked. On Windows, it sets `core.longpaths=true` in the repo config, with a notice, when the longest tracked path plus the worktree prefix (~50 chars) exceeds 259. If the add fails, it removes the half-made worktree and deletes the branch, which git creates even when the checkout fails. Name collisions also check existing directories and branches, since Claude's own `--worktree` and background agents use `.claude/worktrees/` too.
+2. `git worktree add .claude/worktrees/<name> -b cc/<name> <base>`, where base is the default branch or `HEAD` if chosen. The default branch is fetched from origin if the last fetch is older than 24 h; the local branch is used unless origin's copy is strictly ahead of it, so new agents also see work you merged locally but have not pushed. Before the first one, ccdash adds `.claude/worktrees/` to `.git/info/exclude`, so the main checkout does not show it as untracked. On Windows, it sets `core.longpaths=true` in the repo config, with a notice, when the longest tracked path plus the worktree prefix (~50 chars) exceeds 259. If the add fails, it removes the half-made worktree and deletes the branch, which git creates even when the checkout fails. Name collisions also check existing directories and branches, since Claude's own `--worktree` and background agents use `.claude/worktrees/` too.
 3. Copy gitignored files listed in `.worktreeinclude` (same semantics as Claude Code's), then run the optional `setup` command from config (for example `npm ci`) inside the worktree, showing progress in the table.
 4. Write the agent record, render the prompt (protocol + agent list + task).
 5. `tmux new-session -d -s ccdash-<repo>-<name> -c <worktree> -e CCDASH_AGENT=<name> -e CCDASH_STATE=<dir> claude --name <name> --settings <hooks.json> [--model …] [--permission-mode …] "<prompt>"`. The runner removes the parent Claude session's variables from the agent's environment (`CLAUDECODE`, `CLAUDE_PID`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_MESSAGING_SOCKET`, `CLAUDE_CODE_MESSAGING_TOKEN`, … see findings) in case `cc` itself runs inside Claude Code, and sets `COLORTERM=truecolor`. On Windows the prompt is part of the command line, which is capped at 32,767 characters.
@@ -270,7 +270,9 @@ On Windows the step lists below read "host" wherever they say "tmux session". Fr
 
 **Stop (`s`)**: send `Escape`, then `/exit` + `Enter` to the pane; wait 10 s for `SessionEnd`; if the pane is still alive, `tmux kill-session`. Worktree, branch and record stay. Lifecycle becomes `stopped`.
 
-**Restart (`r`)**: new tmux session in the same worktree running `claude --resume <claude_session_id> --name <name> --settings <hooks.json>`. `--resume` keeps the session id and the name. `--continue` would pick up any newer session started by hand in that folder, and with no conversation it exits 1 ("No conversation found to continue"). If the record has no session id yet, start with the original prompt instead.
+ccdash passes `--session-id <uuid>` at start, so it knows the session id before any hook fires.
+
+**Restart (`r`)**: new tmux session in the same worktree running `claude --resume <claude_session_id> --name <name> --settings <hooks.json>`, when the session's transcript exists. `--resume` keeps the session id and the name. `--continue` would pick up any newer session started by hand in that folder, and with no conversation it exits 1 ("No conversation found to continue"). If the record has no session id yet, start with the original prompt instead.
 
 **Attach (`a` / `Enter`)**: suspend the TUI (Textual `App.suspend()`), run `tmux attach -t <session>`; when the user detaches, the TUI resumes and refreshes. If ccdash itself runs inside tmux, use `tmux switch-client` instead and bind a key to come back.
 
@@ -306,7 +308,7 @@ ccdash never force-pushes, never rewrites the default branch, and never merges w
 
 ## Tech stack, config and project structure
 
-**Stack:** Python 3.11+, [Textual](https://textual.textualize.io) for the TUI, `watchfiles` for the events file, `tomllib` for config, pywinpty for the Windows runner, stdlib file locks (`msvcrt` / `fcntl`; portalocker was dropped after Phase 0 because its import alone takes 165 ms), stdlib `multiprocessing.connection` for the host's named pipe, plain `subprocess` for git, tmux and gh. Install with `uv tool install .` or `pipx install .`; the entry point is `cc`. On Windows the interpreter must be a python.org or uv-managed CPython, not the Microsoft Store one, and ccdash warns at startup if it runs on the Store build. Runtime dependencies besides Python: git 2.38+ (for `merge-tree --write-tree`), Claude Code (the native Windows install on Windows), tmux 3.2+ on macOS/Linux only; `gh` optional.
+**Stack:** Python 3.11+, [Textual](https://textual.textualize.io) for the TUI, `watchfiles` for the events file, `tomllib` for config, pywinpty for the Windows runner, stdlib file locks (`msvcrt` / `fcntl`; portalocker was dropped after Phase 0 because its import alone takes 165 ms), stdlib `multiprocessing.connection` for the host's named pipe (HMAC-authenticated), `pyte` as the host's VT screen emulator (peek and repaint on attach), plain `subprocess` for git, tmux and gh. Dev only: pytest and pytest-textual-snapshot; async Pilot tests run through a small conftest hook instead of an async plugin. Install with `uv tool install .` or `pipx install .`; the entry point is `cc`. On Windows the interpreter must be a python.org or uv-managed CPython, not the Microsoft Store one, and ccdash warns at startup if it runs on the Store build. Runtime dependencies besides Python: git 2.38+ (for `merge-tree --write-tree`), Claude Code (the native Windows install on Windows), tmux 3.2+ on macOS/Linux only; `gh` optional.
 
 Why Python and Textual: fastest to build and iterate, good widgets (DataTable, modals, suspend for attach), and snapshot tests. A Go + Bubble Tea version is the alternative if a single static binary matters later.
 
@@ -333,20 +335,29 @@ ccdash/
   src/ccdash/
     cli.py            # `cc`, `cc "task"`, `cc ls`, `cc stop <name>`, `cc hook <event>`
     config.py
+    repo.py           # repo discovery, state dir (+ fallback), default branch, base ref
     state.py          # state dir, agents.json, events.jsonl reader, locking
-    hook.py           # the hook entry point: fast, no Textual import
-    hooks_settings.py # renders hooks.json for --settings
+    model.py          # AgentRecord
+    naming.py         # slugs and unique names
+    workspace.py      # lifecycle used by CLI and TUI: new/stop/restart/delete/adopt/reconcile/views
+    dashboard.py      # the TUI's data model: refresh cadence, sorting, counts
+    hook.py           # the hook entry point: fast, stdlib only, no Textual import
+    hookserver.py     # the host's localhost endpoint for HTTP hooks (Windows)
+    hooks_settings.py # renders the --settings hook registration
     runner.py         # Runner protocol + WinPtyRunner + TmuxRunner (BgRunner later)
-    host.py           # `ccdash host <name>`: owns one agent's ConPTY + named pipe (Windows)
+    host.py           # `ccdash host`: owns one agent's ConPTY, pyte screen, named pipe (Windows)
+    pipeproto.py      # request/attach framing over the host's named pipe
     attach.py         # `cc attach <name>`: raw-console proxy to a host (Windows)
     worktree.py       # create, include-copy, setup, remove
+    gitignore.py      # .gitignore-syntax matcher for .worktreeinclude
     gitstate.py       # status, ahead/behind, merge-tree, cached by SHA pair
     conflicts.py      # overlap, merge, shared, stale-base rows
-    messaging.py      # deliver to agents: socket or tmux send-keys
+    messaging.py      # deliver to agents (typed into the terminal), message log, threads
+    prompt.py         # renders protocol.md with the live agent list and the task
     protocol.md       # coordination prompt template
     tui/
-      app.py
-      agents_table.py  details.py  messages.py  conflicts.py  modals.py
+      app.py  app.tcss  theme.py
+      agents_table.py  panels.py  modals.py
   tests/
     fake_claude.py    # stand-in for claude, see Testing
     test_*.py
@@ -376,7 +387,7 @@ Build in six phases. Each phase ends with a working tool and its acceptance chec
 
 All tests run without the real Claude and without network access. Real-Claude checks are a short manual script, run once per phase.
 
-- **Fake Claude.** `tests/fake_claude.py` is put on `PATH` as `claude`. It reads a scenario file (via an environment variable) and, with realistic delays, pipes hook JSON into `ccdash hook <event>`, edits files in its worktree, commits, and "sends messages" by emitting `PreToolUse` events for `SendMessage`. It reacts to `/exit` on stdin.
+- **Fake Claude.** `tests/fake_claude.py` replaces `claude` through `CCDASH_CLAUDE` (a JSON argv), not `PATH`, so the prompt never goes through `cmd.exe` quoting. It reads a scenario file (via an environment variable) and, with realistic delays, pipes hook JSON into `ccdash hook <event>`, edits files in its worktree, commits, and "sends messages" by emitting `PreToolUse` events for `SendMessage`. It reacts to `/exit` on stdin.
 - **Temp repos.** A pytest fixture creates a bare origin plus a clone with a `main` branch and a few files, so worktree, merge-tree, merge and push code run against real git.
 - **Unit tests:** slugify and naming, status derivation from event sequences, conflict detection, merge-state rules, config precedence, hook speed (a test fails if the hook's in-process work takes over 10 ms, or a full hook call over 150 ms including interpreter startup).
 - **TUI tests:** Textual's `Pilot` drives keys; `pytest-textual-snapshot` covers the main screen, each modal, the Network view and the reduced-motion mode.

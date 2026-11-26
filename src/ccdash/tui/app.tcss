@@ -1,0 +1,163 @@
+/* ccdash: calm, terminal-native, rounded borders, accent only on the focused panel. */
+
+Screen {
+    layout: vertical;
+    background: $ccdash-bg;
+}
+
+#header {
+    height: 1;
+    padding: 0 1;
+}
+
+.panel {
+    border: round $ccdash-dim;
+    border-title-color: $ccdash-dim;
+    border-title-style: bold;
+    padding: 0 1;
+    background: $ccdash-bg;
+}
+
+.panel:focus-within {
+    border: round $accent;
+    border-title-color: $accent;
+}
+
+#agents-panel {
+    height: auto;
+    max-height: 45%;
+    min-height: 5;
+}
+
+#agents {
+    height: auto;
+    max-height: 100%;
+    background: $ccdash-bg;
+    scrollbar-size-vertical: 1;
+}
+
+#agents > .datatable--header {
+    color: $ccdash-dim;
+    text-style: none;
+    background: $ccdash-bg;
+}
+
+#agents > .datatable--cursor {
+    background: $ccdash-bg;
+    text-style: bold;
+}
+
+#agents > .datatable--hover {
+    background: $ccdash-bg;
+}
+
+#middle {
+    height: 1fr;
+    min-height: 6;
+}
+
+#details-panel {
+    width: 1fr;
+}
+
+#messages-panel {
+    width: 1fr;
+}
+
+#conflicts-panel {
+    height: auto;
+    max-height: 8;
+    min-height: 3;
+}
+
+.dim {
+    color: $ccdash-dim;
+}
+
+#footer {
+    height: 1;
+    padding: 0 1;
+    color: $ccdash-dim;
+}
+
+/* Below 100 columns the middle panels stack. */
+.narrow #middle {
+    layout: vertical;
+}
+
+.narrow #details-panel, .narrow #messages-panel {
+    width: 100%;
+    height: 1fr;
+}
+
+/* Full-screen views replace the middle row. */
+.view-comms #middle, .view-comms #conflicts-panel, .view-comms #agents-panel {
+    display: none;
+}
+
+#comms {
+    display: none;
+    height: 1fr;
+}
+
+.view-comms #comms {
+    display: block;
+}
+
+Toast {
+    background: $ccdash-bg;
+    border-left: tall $accent;
+}
+
+ModalScreen {
+    align: center middle;
+    background: transparent;
+}
+
+.modal {
+    width: 72;
+    max-width: 95%;
+    height: auto;
+    border: round $accent;
+    border-title-color: $accent;
+    border-title-style: bold;
+    padding: 1 2;
+    background: $ccdash-bg;
+}
+
+.modal Input {
+    border: round $ccdash-dim;
+    background: $ccdash-bg;
+    margin: 0 0 1 0;
+}
+
+.modal Input:focus {
+    border: round $accent;
+}
+
+.modal Label {
+    color: $ccdash-dim;
+}
+
+.modal .row {
+    height: auto;
+}
+
+.modal .hint {
+    color: $ccdash-dim;
+    margin-top: 1;
+}
+
+.modal .warn {
+    color: ansi_yellow;
+}
+
+.modal Select {
+    margin: 0 0 1 0;
+}
+
+#details, #messages, #conflicts {
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+

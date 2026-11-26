@@ -1,0 +1,382 @@
+"""The ccdash dashboard (Textual)."""
+
+from __future__ import annotations
+
+import asyncio
+import time
+from pathlib import Path
+
+from rich.text import Text
+from textual import work
+from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.containers import Container, Horizontal
+from textual.screen import ModalScreen
+from textual.widgets import DataTable, Static
+
+from ..dashboard import Dashboard, Progress
+from ..workspace import Workspace, WorkspaceError
+from .agents_table import AgentsTable
+from .modals import ConfirmDeleteModal, HelpModal, NewAgentModal
+from .panels import ConflictsPanel, DetailsPanel, MessagesPanel
+from .theme import ACCENT, DIM, THEMES, pick_theme, reduced_motion
+
+MAIN_ACTIONS = {"new", "stop", "restart", "attach", "peek", "talk", "broadcast", "merge", "diff", "delete", "filter",
+                "network", "filemap", "comms", "toggle_hidden", "adopt", "help", "quit_dash"}
+
+FOOTER_KEYS = [("n", "new"), ("s", "stop"), ("r", "restart"), ("a", "attach"), ("p", "peek"), ("t", "talk"),
+               ("b", "broadcast"), ("m", "merge"), ("d", "diff"), ("x", "delete"), ("?", "help"), ("q", "quit")]
+
+
+class CCDashApp(App):
+    CSS_PATH = "app.tcss"
+    TITLE = "ccdash"
+    ENABLE_COMMAND_PALETTE = False
+    BINDINGS = [
+        Binding("n", "new", "new"), Binding("s", "stop", "stop"), Binding("r", "restart", "restart"),
+        Binding("a", "attach", "attach"), Binding("p", "peek", "peek"), Binding("t", "talk", "talk"),
+        Binding("b", "broadcast", "broadcast"), Binding("m", "merge", "merge"), Binding("d", "diff", "diff"),
+        Binding("x", "delete", "delete"), Binding("slash", "filter", "filter"), Binding("g", "network", "network"),
+        Binding("f", "filemap", "file map"), Binding("c", "comms", "comms"),
+        Binding("H", "toggle_hidden", "hidden"), Binding("A", "adopt", "adopt"),
+        Binding("question_mark", "help", "help"), Binding("q", "quit_dash", "quit"),
+    ]
+
+    def __init__(self, ws: Workspace, attach_fn=None, no_anim: bool = False):
+        super().__init__()
+        self.ws = ws
+        self.dash = Dashboard(ws)
+        self.attach_fn = attach_fn
+        self.animate = ws.cfg.animations and not reduced_motion(no_anim)
+        self.frame = 0
+        self.peek_on = False
+        self.peek_lines: list[str] | None = None
+        self._booted = False
+        for theme in THEMES:  # before the stylesheet is parsed: it uses $ccdash-bg / $ccdash-dim
+            self.register_theme(theme)
+        self.theme = pick_theme()
+
+    # -- layout -------------------------------------------------------------------------
+    def compose(self) -> ComposeResult:
+        yield Static(id="header")
+        with Container(id="agents-panel", classes="panel") as p:
+            p.border_title = "Agents"
+            yield AgentsTable(id="agents")
+        with Horizontal(id="middle"):
+            with Container(id="details-panel", classes="panel") as p:
+                p.border_title = "Details"
+                yield DetailsPanel(id="details")
+            with Container(id="messages-panel", classes="panel") as p:
+                p.border_title = "Messages"
+                yield MessagesPanel(id="messages")
+        with Container(id="conflicts-panel", classes="panel") as p:
+            p.border_title = "Conflicts"
+            yield ConflictsPanel(id="conflicts")
+        yield Static(id="footer")
+
+    @property
+    def table(self) -> AgentsTable:
+        return self.query_one("#agents", AgentsTable)
+
+    def on_mount(self) -> None:
+        self._layout(self.size.width)
+        self.table.focus()
+        self.render_all()
+        self.refresh_runtime_worker()
+        self.refresh_git_worker()
+        self.set_interval(2.0, self.refresh_runtime_worker, name="runtime")
+        self.set_interval(10.0, self.refresh_git_worker, name="git")
+        self.set_interval(30.0, self._render_header, name="clock")
+
+    def on_resize(self, event) -> None:
+        self._layout(event.size.width)
+
+    def _layout(self, width: int) -> None:
+        self.set_class(width < 100, "narrow")
+        try:
+            self.table.fit_width(width - 4)
+        except Exception:  # noqa: BLE001  (before mount)
+            pass
+
+    def check_action(self, action: str, parameters) -> bool | None:
+        if action in MAIN_ACTIONS and isinstance(self.screen, ModalScreen):
+            return False
+        return True
+
+    # -- refresh ------------------------------------------------------------------------
+    @work(thread=True, exclusive=True, group="runtime")
+    def refresh_runtime_worker(self) -> None:
+        self.dash.refresh_runtime()
+        self._update_peek()
+        self.call_from_thread(self.render_all)
+
+    @work(thread=True, exclusive=True, group="git")
+    def refresh_git_worker(self) -> None:
+        self.dash.refresh_git()
+        self.call_from_thread(self.render_all)
+
+    async def refresh_now(self) -> None:
+        await asyncio.to_thread(self.dash.refresh_all)
+        self.render_all()
+
+    def _update_peek(self) -> None:
+        name = self.selected_name()
+        v = self.dash.get(name) if name else None
+        self.peek_lines = self.ws.peek(name, lines=30) if (self.peek_on and v is not None and v.alive) else None
+
+    # -- rendering ----------------------------------------------------------------------
+    def render_all(self) -> None:
+        self._render_header()
+        views = self.dash.sorted_views()
+        self.table.update_views(views, self.status_kw_for)
+        self._render_details()
+        self._render_messages()
+        self._render_conflicts()
+        self._render_footer()
+
+    def status_kw_for(self, v) -> dict:
+        return {"frame": self.frame, "animate": self.animate, "progress": self.dash.progress.get(v.name)}
+
+    def header_text(self) -> str:
+        return self._header().plain
+
+    def _header(self) -> Text:
+        c = self.dash.counts()
+        default = self.ws.default_branch
+        left = Text.assemble((" ccdash", f"bold {ACCENT}"), (" · ", DIM), (self.ws.repo.name, "bold"),
+                             (f" ({default} @ {self.dash.default_sha or '…'})", DIM))
+        parts = [f"{c['agents']} agent{'s' if c['agents'] != 1 else ''}", f"{c['working']} working",
+                 f"{c['needs_input']} needs input", f"{c['conflicts']} conflict{'s' if c['conflicts'] != 1 else ''}"]
+        mid = Text()
+        styles = ["default", "green", "yellow", "red"]
+        for i, (part, st) in enumerate(zip(parts, styles)):
+            if i:
+                mid.append(" · ", style=DIM)
+            zero = part.startswith("0 ")
+            mid.append(part, style=DIM if zero and i else st)
+        right = Text(time.strftime("%H:%M"), style=DIM)
+        width = max(40, self.size.width - 2)
+        gap = width - len(left) - len(mid) - len(right)
+        pad1 = max(2, gap // 2)
+        pad2 = max(1, gap - pad1)
+        return Text.assemble(left, " " * pad1, mid, " " * pad2, right)
+
+    def _render_header(self) -> None:
+        self.query_one("#header", Static).update(self._header())
+
+    def _render_footer(self) -> None:
+        t = Text(" ")
+        for key, label in FOOTER_KEYS:
+            t.append(key, style=ACCENT)
+            t.append(f" {label}  ", style=DIM)
+        if self.dash.filter:
+            t.append(f"filter: {self.dash.filter}", style=ACCENT)
+        self.query_one("#footer", Static).update(t)
+
+    def _render_details(self) -> None:
+        name = self.selected_name()
+        v = self.dash.get(name) if name else None
+        panel = self.query_one("#details-panel")
+        panel.border_title = name or "Details"
+        activity = self.dash.activity.get(name) if (self.dash.activity is not None and name) else None
+        self.query_one("#details", DetailsPanel).show(
+            v, repo_rel=self.ws.repo.rel, default_branch=self.ws.default_branch, default_sha=self.dash.default_sha,
+            activity=activity, peek=self.peek_lines if self.peek_on else None, frame=self.frame,
+            animate=self.animate, owns=self._owns(name), tests=getattr(activity, "tests", "") if activity else "")
+
+    def _owns(self, name: str | None) -> list[str]:
+        if not name or self.dash.conflicts is None:
+            return []
+        return self.dash.conflicts.owned(name)
+
+    def _render_messages(self) -> None:
+        msgs = self.dash.messages.items if self.dash.messages is not None else None
+        self.query_one("#messages", MessagesPanel).show(msgs, highlight=self.selected_name())
+
+    def _render_conflicts(self) -> None:
+        rows = self.dash.conflicts.rows if self.dash.conflicts is not None else None
+        self.query_one("#conflicts", ConflictsPanel).show(rows)
+
+    # -- selection ------------------------------------------------------------------------
+    def selected_name(self) -> str | None:
+        try:
+            return self.table.selected()
+        except Exception:  # noqa: BLE001
+            return None
+
+    def select(self, name: str) -> None:
+        self.table.select(name)
+        self.render_all()
+
+    def row_text(self, name: str) -> str:
+        return self.table.row_plain(name)
+
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        if self.peek_on:
+            self.peek_lines = None
+        self.render_all()
+
+    def _selected_view(self, need_alive: bool | None = None):
+        name = self.selected_name()
+        v = self.dash.get(name) if name else None
+        if v is None:
+            self.notify("No agent selected.", severity="warning")
+            return None
+        if v.status == "untracked" and need_alive is not None:
+            self.notify(f"{name} is an untracked worktree; press A to adopt it first.", severity="warning")
+            return None
+        if need_alive is True and not v.alive:
+            self.notify(f"{name} is not running. Press r to restart it.", severity="warning")
+            return None
+        if need_alive is False and v.alive:
+            self.notify(f"{name} is still running.", severity="warning")
+            return None
+        return v
+
+    # -- actions --------------------------------------------------------------------------
+    def action_new(self) -> None:
+        taken = set(self.dash.views) | self.ws._taken(self.ws.registry.load())
+        modal = NewAgentModal(taken, self.ws.default_branch, self.ws.cfg.model, self.ws.cfg.permission_mode)
+        self.push_screen(modal, callback=self._create)
+
+    def _create(self, params: dict | None) -> None:
+        if params:
+            self.dash.progress[params["name"]] = Progress("worktree", 0.0)
+            self.create_agent(params)
+
+    @work(thread=True)
+    def create_agent(self, params: dict) -> None:
+        name = params["name"]
+
+        def progress(step: str, frac: float) -> None:
+            self.dash.progress[name] = Progress(step, frac)
+            self.call_from_thread(self.refresh_runtime_worker)
+
+        try:
+            self.ws.new_agent(params["task"], name=name, base=params.get("base"), model=params.get("model"),
+                              permission_mode=params.get("permission_mode"), progress=progress)
+            self.call_from_thread(self.notify, f"Started {name}.")
+        except (WorkspaceError, RuntimeError) as exc:
+            self.call_from_thread(self.notify, str(exc), title="Could not start agent", severity="error", timeout=8)
+        finally:
+            self.dash.progress.pop(name, None)
+            self.dash.refresh_all()
+            self.call_from_thread(self._select_and_render, name)
+
+    def _select_and_render(self, name: str) -> None:
+        self.render_all()
+        self.table.select(name)
+        self.render_all()
+
+    def action_stop(self) -> None:
+        v = self._selected_view(need_alive=True)
+        if v:
+            self.notify(f"Stopping {v.name}…")
+            self._run(lambda: self.ws.stop(v.name), done=f"Stopped {v.name}; worktree and branch kept.")
+
+    def action_restart(self) -> None:
+        v = self._selected_view(need_alive=False)
+        if v:
+            self._run(lambda: self.ws.restart(v.name), done=f"Restarted {v.name}.")
+
+    @work(thread=True)
+    def _run(self, fn, done: str = "") -> None:
+        try:
+            fn()
+            if done:
+                self.call_from_thread(self.notify, done)
+        except (WorkspaceError, RuntimeError) as exc:
+            self.call_from_thread(self.notify, str(exc), severity="error", timeout=8)
+        self.dash.refresh_all()
+        self.call_from_thread(self.render_all)
+
+    def action_attach(self) -> None:
+        v = self._selected_view(need_alive=True)
+        if not v:
+            return
+        fn = self.attach_fn or self.ws.attach
+        driver = getattr(self, "_driver", None)
+        if self.attach_fn is None and driver is not None and driver.can_suspend:
+            with self.suspend():
+                print(f"\x1b[2mattached to {v.name} · Ctrl+] detaches\x1b[0m", flush=True)
+                fn(v.name)
+        else:
+            fn(v.name)
+        self.refresh_runtime_worker()
+
+    def action_delete(self) -> None:
+        v = self._selected_view()
+        if v is None:
+            return
+        if v.status == "untracked":
+            self.notify("Untracked worktrees are not deleted by ccdash; adopt it first (A).", severity="warning")
+            return
+        self._check_delete(v.name)
+
+    @work(thread=True)
+    def _check_delete(self, name: str) -> None:
+        try:
+            check = self.ws.delete_check(name)
+        except WorkspaceError as exc:
+            self.call_from_thread(self.notify, str(exc), severity="error")
+            return
+        self.call_from_thread(self.push_screen, ConfirmDeleteModal(check),
+                              lambda confirm: confirm and self._run(lambda: self.ws.delete(name, confirm=confirm),
+                                                                    done=f"Deleted {name}."))
+
+    def action_toggle_hidden(self) -> None:
+        self.dash.show_hidden = not self.dash.show_hidden
+        self.notify("Showing deleted agents." if self.dash.show_hidden else "Hiding deleted agents.")
+        self.refresh_runtime_worker()
+
+    def action_adopt(self) -> None:
+        name = self.selected_name()
+        v = self.dash.get(name) if name else None
+        if v is None or v.status != "untracked":
+            self.notify("Select an untracked worktree to adopt.", severity="warning")
+            return
+        self._run(lambda: self.ws.adopt(name), done=f"Adopted {name}; press r to start it.")
+
+    def action_help(self) -> None:
+        self.push_screen(HelpModal())
+
+    def action_quit_dash(self) -> None:
+        self.exit(0)
+
+    def action_peek(self) -> None:
+        self.peek_on = not self.peek_on
+        self.refresh_runtime_worker()
+
+    def _not_yet(self, what: str) -> None:
+        self.notify(f"{what} is not available yet.", severity="warning")
+
+    def action_talk(self) -> None:
+        self._not_yet("Talk")
+
+    def action_broadcast(self) -> None:
+        self._not_yet("Broadcast")
+
+    def action_merge(self) -> None:
+        self._not_yet("The merge menu")
+
+    def action_diff(self) -> None:
+        self._not_yet("Diff")
+
+    def action_filter(self) -> None:
+        self._not_yet("Filter")
+
+    def action_network(self) -> None:
+        self._not_yet("The network view")
+
+    def action_filemap(self) -> None:
+        self._not_yet("The file map")
+
+    def action_comms(self) -> None:
+        self._not_yet("The comms view")
+
+
+def run(no_anim: bool = False, cwd: Path | None = None) -> int:
+    ws = Workspace.open(cwd)
+    app = CCDashApp(ws, no_anim=no_anim)
+    result = app.run()
+    return int(result or 0)

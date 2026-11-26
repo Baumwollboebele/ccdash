@@ -172,6 +172,12 @@ A ccdash worktree adds about 50 chars (`\.claude\worktrees\<name≤30>\`) to eve
 
 Two hosted sessions each served their own `\\.\pipe\ccdash-p0-<name>`, while Claude bound `\\.\pipe\LOCAL\cc-msg-…`. Different namespaces, no interference. `SendMessage` alpha → beta was delivered in 0.19 s.
 
+### Addendum: HTTP hooks (checked after Phase 0, `spikes/phase0/httphook.py`)
+
+A session with `--settings` registering `type: "http"` hooks to `http://127.0.0.1:<port>/hook/…` (served by a stdlib `ThreadingHTTPServer`) delivered UserPromptSubmit, PreToolUse, PostToolUse and Stop as POSTs (`Content-Type: application/json`, `User-Agent: axios/…`; same JSON as command stdin). It did **not** deliver SessionStart. The docs say SessionStart (and Setup) support only `command` and `mcp_tool` hooks. SessionEnd, Notification and PermissionRequest support `http`. HTTP hooks have no `async`. They cost no process start, so they are fast, synchronous and in order. An `allowedHttpHookUrls` setting, if the user or their org defines one, would block them.
+
+**Decision:** on Windows, the per-agent `ccdash host` serves the agent's hook endpoint on localhost. SessionStart stays a command hook (async, once per session). The tmux runner uses command hooks throughout. If `allowedHttpHookUrls` is set, command hooks are used everywhere.
+
 ## Side effects on this machine
 
 - Accepting the trust dialog once added the temp repo to `~/.claude.json` (`projects["C:/…/scratchpad/p0/repo"].hasTrustDialogAccepted = true`). This is also where ccdash can check trust before spawning.

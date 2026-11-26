@@ -1,0 +1,38 @@
+[project]
+name = "ccdash"
+version = "0.1.0"
+description = "Terminal dashboard that starts, monitors and coordinates parallel Claude Code agents in git worktrees"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "textual>=8.2",
+    "watchfiles>=1.0",
+    "pyte>=0.8.2",
+    "pywinpty>=3.1; sys_platform == 'win32'",
+]
+
+[project.scripts]
+cc = "ccdash.cli:main"
+ccdash = "ccdash.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0",
+    "pytest-textual-snapshot>=1.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ccdash"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+    "tmux: needs tmux (Linux/macOS)",
+    "windows: needs native Windows (ConPTY)",
+    "real_claude: runs the real claude CLI (manual, never in CI)",
+]
