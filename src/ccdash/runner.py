@@ -42,6 +42,7 @@ SCRUB_VARS = (
     "CLAUDE_PROJECT_DIR",
     "CCDASH_AGENT",
     "CCDASH_STATE",
+    "CCDASH_WORKTREE",
 )
 
 CREATE_NEW_PROCESS_GROUP = 0x00000200
@@ -75,7 +76,7 @@ def claude_args(name: str, *, session_id: str | None = None, resume: str | None 
     return args
 
 
-def agent_env(state: State, name: str) -> dict[str, str]:
+def agent_env(state: State, name: str, worktree: str | None = None) -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if k not in SCRUB_VARS}
     if os.environ.get("CLAUDECODE"):
         # Claude Code exports NO_COLOR to its tool shells; an agent started from there
@@ -83,6 +84,8 @@ def agent_env(state: State, name: str) -> dict[str, str]:
         env.pop("NO_COLOR", None)
     env["CCDASH_AGENT"] = name
     env["CCDASH_STATE"] = str(state.root)
+    if worktree:
+        env["CCDASH_WORKTREE"] = str(worktree)
     env.setdefault("COLORTERM", "truecolor")
     return env
 

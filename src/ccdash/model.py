@@ -35,6 +35,7 @@ class AgentRecord:
     claude_pid: int | None = None
     stop_requested: bool = False
     restarts: int = 0
+    started_at: float | None = None  # epoch of the current run's start
     setup: str = ""  # "" | running | ok | failed: <code>
     adopted: bool = False
     extra: dict = field(default_factory=dict, repr=False)  # unknown keys from newer versions, kept as-is

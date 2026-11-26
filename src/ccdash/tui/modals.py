@@ -227,3 +227,24 @@ class HelpModal(ModalScreen[None]):
 
     def action_close(self) -> None:
         self.dismiss(None)
+
+
+class MessageModal(ModalScreen[None]):
+    BINDINGS = [Binding("escape,enter,q", "close", "close")]
+
+    def __init__(self, title: str, text: str, summary: str = ""):
+        super().__init__(id="message")
+        self.title_text = title
+        self.text = text
+        self.summary = summary
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="modal") as box:
+            box.border_title = self.title_text
+            if self.summary:
+                yield Static(Text(self.summary, style="bold"))
+            yield Static(Text(self.text))
+            yield Static(Text.assemble(("esc", ACCENT), " close"), classes="hint")
+
+    def action_close(self) -> None:
+        self.dismiss(None)

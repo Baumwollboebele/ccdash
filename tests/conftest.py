@@ -16,6 +16,16 @@ FAKE_CLAUDE = HERE / "fake_claude.py"
 WINDOWS = sys.platform == "win32"
 
 
+@pytest.fixture(autouse=True)
+def _watchdog():
+    """A hanging test dumps all stacks and ends the run instead of blocking forever."""
+    import faulthandler
+
+    faulthandler.dump_traceback_later(int(os.environ.get("CCDASH_TEST_TIMEOUT", "120")), exit=True)
+    yield
+    faulthandler.cancel_dump_traceback_later()
+
+
 @pytest.hookimpl(tryfirst=True)
 def pytest_pyfunc_call(pyfuncitem):
     """Run `async def` tests (Textual Pilot) with asyncio.run; no async plugin needed."""

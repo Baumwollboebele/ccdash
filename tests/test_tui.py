@@ -12,8 +12,9 @@ SIZE = (120, 35)
 
 
 async def settle(pilot, app, rounds=3):
+    """Wait for the app's finite workers (not the endless event watcher)."""
     for _ in range(rounds):
-        await app.workers.wait_for_complete()
+        await app.workers.wait_for_complete([w for w in app.workers if w.group not in ("watch",)])
         await pilot.pause(0.05)
 
 
@@ -128,3 +129,66 @@ async def test_narrow_terminal_stacks_panels(repo, ws):
     async with app.run_test(size=SIZE) as pilot:
         await settle(pilot, app)
         assert not app.has_class("narrow")
+
+
+# -- Phase 2: live status, messages, talk, broadcast, peek -------------------------------
+async def wait_auto(pilot, predicate, timeout=4.0):
+    """Wait WITHOUT forcing a refresh: the app's own event watching must get there."""
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        await pilot.pause(0.1)
+        if predicate():
+            return
+    raise AssertionError("the TUI did not update by itself")
+
+
+async def test_live_status_messages_and_needs_input_on_top(repo, ws, set_scenario):
+    set_scenario({"sender": [{"sleep": 1.5}, {"send": {"to": "asker", "message": "Files: src/api/**\nheads up"}},
+                             {"say": "DONE: sent"}],
+                  "asker": [{"sleep": 2.5}, {"permission": "Write", "path": "x.txt"}], "*": []})
+    ws.new_agent("asks", name="asker")
+    ws.new_agent("sends", name="sender")
+    app = CCDashApp(Workspace.open(repo.root))
+    async with app.run_test(size=SIZE) as pilot:
+        await settle(pilot, app)
+        await wait_auto(pilot, lambda: "finished" in app.row_text("sender"), timeout=6)
+        await wait_auto(pilot, lambda: "needs input" in app.row_text("asker"), timeout=6)
+        assert table_names(app)[0] == "asker", "needs input sorts to the top"
+        assert "1 needs input" in app.header_text()
+        assert any(m.sender == "sender" and m.to == "asker" for m in app.dash.messages.items)
+        assert "sender → asker" in app.messages_text()
+        app.select("sender")
+        assert "SendMessage → asker" in app.details_text()
+    for n in ("asker", "sender"):
+        ws.stop(n)
+
+
+async def test_talk_broadcast_and_peek_keys(repo, ws):
+    ws.new_agent("one", name="one")
+    ws.new_agent("two", name="two")
+    app = CCDashApp(Workspace.open(repo.root))
+    async with app.run_test(size=SIZE) as pilot:
+        await settle(pilot, app)
+        await until(pilot, app, lambda: "idle" in app.row_text("one") and "idle" in app.row_text("two"))
+        app.select("one")
+        await pilot.press("t")
+        await pilot.pause()
+        assert app.screen.id == "talk"
+        await pilot.press(*"use the AuthGuard", "enter")
+        await settle(pilot, app)
+        await until(pilot, app, lambda: "ack: [from the user] use the AuthGuard" in "\n".join(ws.peek("one", 60)))
+        await pilot.press("b")
+        await pilot.pause()
+        assert app.screen.id == "broadcast"
+        await pilot.press(*"rebase please", "enter")
+        await settle(pilot, app)
+        await until(pilot, app, lambda: "rebase please" in "\n".join(ws.peek("two", 60)))
+        await until(pilot, app, lambda: "you → all" in app.messages_text() and "you → one" in app.messages_text())
+        await pilot.press("p")
+        await until(pilot, app, lambda: "live output" in app.details_text() and "rebase please" in app.details_text())
+        await pilot.press("p")
+        await until(pilot, app, lambda: "live output" not in app.details_text())
+    for n in ("one", "two"):
+        ws.stop(n)

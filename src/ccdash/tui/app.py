@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from pathlib import Path
 
@@ -17,7 +18,7 @@ from textual.widgets import DataTable, Static
 from ..dashboard import Dashboard, Progress
 from ..workspace import Workspace, WorkspaceError
 from .agents_table import AgentsTable
-from .modals import ConfirmDeleteModal, HelpModal, NewAgentModal
+from .modals import ConfirmDeleteModal, HelpModal, MessageModal, NewAgentModal, TextInputModal
 from .panels import ConflictsPanel, DetailsPanel, MessagesPanel
 from .theme import ACCENT, DIM, THEMES, pick_theme, reduced_motion
 
@@ -52,6 +53,7 @@ class CCDashApp(App):
         self.peek_on = False
         self.peek_lines: list[str] | None = None
         self._booted = False
+        self._watch_stop = threading.Event()
         for theme in THEMES:  # before the stylesheet is parsed: it uses $ccdash-bg / $ccdash-dim
             self.register_theme(theme)
         self.theme = pick_theme()
@@ -82,11 +84,75 @@ class CCDashApp(App):
         self._layout(self.size.width)
         self.table.focus()
         self.render_all()
-        self.refresh_runtime_worker()
+        self._refreshing = False
+        self._refresh_again = False
+        self.request_refresh()
         self.refresh_git_worker()
-        self.set_interval(2.0, self.refresh_runtime_worker, name="runtime")
+        self.watch_events()
+        self.set_interval(2.0, self.request_refresh, name="runtime")
         self.set_interval(10.0, self.refresh_git_worker, name="git")
+        self.set_interval(1.0, self._peek_tick, name="peek")
         self.set_interval(30.0, self._render_header, name="clock")
+
+    def watch_events(self) -> None:
+        """Refresh as soon as a hook appends an event (the 2 s poll is the fallback).
+
+        A plain daemon thread with a stop event and a 1 s native timeout, so quitting
+        never waits on the watcher."""
+        try:
+            from watchfiles import watch
+        except ImportError:
+            return
+        root = self.ws.state.root
+        root.mkdir(parents=True, exist_ok=True)
+        stop = self._watch_stop
+
+        def run() -> None:
+            try:
+                for _changes in watch(root, watch_filter=lambda change, path: path.endswith("events.jsonl"),
+                                      debounce=60, step=30, rust_timeout=1000, yield_on_timeout=False,
+                                      stop_event=stop, recursive=False, raise_interrupt=False):
+                    if stop.is_set():
+                        return
+                    try:
+                        self.call_from_thread(self.request_refresh)
+                    except Exception:  # noqa: BLE001  (app is gone)
+                        return
+            except Exception:  # noqa: BLE001  (unwatchable file system: polling still works)
+                return
+
+        threading.Thread(target=run, name="ccdash-watch", daemon=True).start()
+
+    def on_unmount(self) -> None:
+        self._watch_stop.set()
+
+    def request_refresh(self) -> None:
+        """Coalesce refresh requests: never more than one runtime refresh in flight."""
+        if getattr(self, "_refreshing", False):
+            self._refresh_again = True
+            return
+        self._refreshing = True
+        self.refresh_runtime_worker()
+
+    def _refresh_done(self) -> None:
+        self._refreshing = False
+        self.render_all()
+        self._toast_transitions()
+        if self.dash.git_wanted:
+            self.refresh_git_worker()
+        if self._refresh_again:
+            self._refresh_again = False
+            self.request_refresh()
+
+    def _toast_transitions(self) -> None:
+        for tr in self.dash.take_transitions():
+            if tr.new == "finished":
+                self.notify(f"{tr.name} finished.", title="Agent finished")
+            elif tr.new == "needs_input":
+                self.notify(f"{tr.name} is waiting for you.", title="Needs input", severity="warning")
+            elif tr.new == "crashed":
+                self.notify(f"{tr.name} exited unexpectedly; its worktree is untouched.", title="Crashed",
+                            severity="error")
 
     def on_resize(self, event) -> None:
         self._layout(event.size.width)
@@ -104,11 +170,27 @@ class CCDashApp(App):
         return True
 
     # -- refresh ------------------------------------------------------------------------
-    @work(thread=True, exclusive=True, group="runtime")
+    @work(thread=True, group="runtime")
     def refresh_runtime_worker(self) -> None:
-        self.dash.refresh_runtime()
+        try:
+            self.dash.refresh_runtime()
+            if (self.ws.state.root / "outbox.json").exists():
+                from .. import messaging
+
+                if messaging.flush_outbox(self.ws, self.dash):
+                    self.dash.refresh_events()
+            self._update_peek()
+        finally:
+            self.call_from_thread(self._refresh_done)
+
+    def _peek_tick(self) -> None:
+        if self.peek_on:
+            self._peek_worker()
+
+    @work(thread=True, exclusive=True, group="peek")
+    def _peek_worker(self) -> None:
         self._update_peek()
-        self.call_from_thread(self.render_all)
+        self.call_from_thread(self._render_details)
 
     @work(thread=True, exclusive=True, group="git")
     def refresh_git_worker(self) -> None:
@@ -250,7 +332,7 @@ class CCDashApp(App):
 
         def progress(step: str, frac: float) -> None:
             self.dash.progress[name] = Progress(step, frac)
-            self.call_from_thread(self.refresh_runtime_worker)
+            self.call_from_thread(self.request_refresh)
 
         try:
             self.ws.new_agent(params["task"], name=name, base=params.get("base"), model=params.get("model"),
@@ -282,9 +364,10 @@ class CCDashApp(App):
     @work(thread=True)
     def _run(self, fn, done: str = "") -> None:
         try:
-            fn()
-            if done:
-                self.call_from_thread(self.notify, done)
+            result = fn()
+            msg = done or (result if isinstance(result, str) else "")
+            if msg:
+                self.call_from_thread(self.notify, msg)
         except (WorkspaceError, RuntimeError) as exc:
             self.call_from_thread(self.notify, str(exc), severity="error", timeout=8)
         self.dash.refresh_all()
@@ -302,7 +385,7 @@ class CCDashApp(App):
                 fn(v.name)
         else:
             fn(v.name)
-        self.refresh_runtime_worker()
+        self.request_refresh()
 
     def action_delete(self) -> None:
         v = self._selected_view()
@@ -327,7 +410,7 @@ class CCDashApp(App):
     def action_toggle_hidden(self) -> None:
         self.dash.show_hidden = not self.dash.show_hidden
         self.notify("Showing deleted agents." if self.dash.show_hidden else "Hiding deleted agents.")
-        self.refresh_runtime_worker()
+        self.request_refresh()
 
     def action_adopt(self) -> None:
         name = self.selected_name()
@@ -345,16 +428,52 @@ class CCDashApp(App):
 
     def action_peek(self) -> None:
         self.peek_on = not self.peek_on
-        self.refresh_runtime_worker()
+        if not self.peek_on:
+            self.peek_lines = None
+            self._render_details()
+        else:
+            self._peek_worker()
 
     def _not_yet(self, what: str) -> None:
         self.notify(f"{what} is not available yet.", severity="warning")
 
     def action_talk(self) -> None:
-        self._not_yet("Talk")
+        from .. import messaging
+
+        v = self._selected_view(need_alive=True)
+        if not v:
+            return
+        modal = TextInputModal(f"Talk to {v.name}", placeholder="one line; the agent sees it as [from the user] …",
+                               hint="Typed into the agent's prompt. Queued while it waits for a permission answer.",
+                               modal_id="talk")
+        self.push_screen(modal, lambda text: text and text.strip() and self._run(
+            lambda: messaging.send_from_user(self.ws, v.name, text, dashboard=self.dash)))
 
     def action_broadcast(self) -> None:
-        self._not_yet("Broadcast")
+        from .. import messaging
+
+        if not any(v.alive for v in self.dash.views.values()):
+            self.notify("No running agents to broadcast to.", severity="warning")
+            return
+        modal = TextInputModal("Broadcast to every running agent", placeholder="one line",
+                               hint="Each agent sees it as [from the user] …", modal_id="broadcast")
+        self.push_screen(modal, lambda text: text and text.strip() and self._run(
+            lambda: "; ".join(messaging.broadcast_from_user(self.ws, text, dashboard=self.dash)) or "no recipients"))
+
+    def on_option_list_option_selected(self, event) -> None:
+        panel = self.query_one("#messages", MessagesPanel)
+        if event.option_list is not panel or event.option.id is None:
+            return
+        m = panel.messages[int(event.option.id)]
+        title = f"{m.sender} → {m.to} · {time.strftime('%H:%M:%S', time.localtime(m.t))}"
+        self.push_screen(MessageModal(title, m.text, m.summary))
+
+    def messages_text(self) -> str:
+        return self.query_one("#messages", MessagesPanel).plain()
+
+    def details_text(self) -> str:
+        t = getattr(self.query_one("#details", DetailsPanel), "last_text", None)
+        return t.plain if t is not None else ""
 
     def action_merge(self) -> None:
         self._not_yet("The merge menu")

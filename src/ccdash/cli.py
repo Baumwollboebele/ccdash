@@ -49,8 +49,13 @@ def cmd_new(ns) -> int:
 
 
 def cmd_ls(ns) -> int:
+    from .dashboard import Dashboard
+
     ws = _ws()
-    views = ws.views(show_hidden=ns.all)
+    d = Dashboard(ws)
+    d.show_hidden = ns.all
+    d.refresh_all()
+    views = d.sorted_views()
     if ns.json:
         _out(json.dumps([v.to_json() for v in views], indent=1, ensure_ascii=False))
         return 0

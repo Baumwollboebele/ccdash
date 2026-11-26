@@ -5,7 +5,8 @@ from __future__ import annotations
 import time
 
 from rich.text import Text
-from textual.widgets import Static
+from textual.widgets import OptionList, Static
+from textual.widgets.option_list import Option
 
 from ..workspace import AgentView
 from .theme import ACCENT, DIM, STATUS_GLYPH, STATUS_STYLE
@@ -47,13 +48,15 @@ class DetailsPanel(Static):
              peek: list[str] | None = None, frame: int = 0, animate: bool = False, owns: list[str] | None = None,
              tests: str = "") -> None:
         if v is None:
-            self.update(Text("No agent selected. Press n to start one.", style=DIM))
+            self.last_text = Text("No agent selected. Press n to start one.", style=DIM)
+            self.update(self.last_text)
             return
         t = Text()
         if v.status == "untracked":
             kv(t, "Worktree", repo_rel(v.worktree))
             kv(t, "Branch", v.branch or "(detached)")
             t.append("\nNot started by ccdash. Press A to adopt it.", style=DIM)
+            self.last_text = t
             self.update(t)
             return
         kv(t, "Worktree", repo_rel(v.worktree) if v.worktree else "(being created)")
@@ -79,28 +82,54 @@ class DetailsPanel(Static):
                                v.status.replace("_", " "))
         if v.exit and not v.alive:
             status.append(f"  (exit {v.exit.get('exitstatus')})", style=DIM)
+        if v.stale:
+            status.append("  no event for 10 min", style=DIM)
         kv(t, "Status", status)
+        if v.hooks_missing:
+            t.append("No hook events from this agent yet. It may be waiting on a dialog (attach with a), or the hooks "
+                     "are not set up: see the host log under .git/ccdash/logs.\n", style="yellow")
+        if v.status == "needs_input":
+            t.append("Waiting for you: attach (a) to answer. Messages you send now are queued.\n", style="yellow")
         if peek is not None:
             t.append("── live output ──\n", style=DIM)
-            for line in peek:
+            height = max(3, (self.size.height or 20) - len(t.plain.splitlines()) - 1)
+            for line in (peek or ["(no output yet)"])[-height:]:
                 t.append(line[:200] + "\n", style="default")
-        t.no_wrap = True
-        t.overflow = "ellipsis"
+        self.last_text = t
         self.update(t)
 
 
-class MessagesPanel(Static):
-    def show(self, messages: list | None, highlight: str | None = None, limit: int = 60) -> None:
-        if not messages:
-            self.update(Text("No messages yet. Agents message each other with SendMessage; press t to talk.",
-                             style=DIM))
+class MessagesPanel(OptionList):
+    """Newest at the bottom; follows new messages unless you scrolled up. Enter expands one."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.messages: list = []
+        self._sig = None
+
+    def show(self, messages: list | None, highlight: str | None = None, limit: int = 200) -> None:
+        messages = list(messages or [])[-limit:]
+        width = max(20, (self.size.width or 60) - 4)
+        sig = (len(messages), highlight, width, tuple((m.delivered, m.queued) for m in messages[-20:]),
+               messages[-1].t if messages else None)
+        if sig == self._sig:
             return
-        t = Text()
-        for m in messages[-limit:]:
-            t.append_text(m.render(highlight=highlight))
-            t.append("\n")
-        self.update(t)
+        self._sig = sig
+        follow = self.highlighted is None or self.highlighted >= self.option_count - 1
+        self.messages = messages
+        self.clear_options()
+        if not messages:
+            self.add_option(Option(Text("No messages yet. Agents talk with SendMessage; t talks to one.", style=DIM),
+                                   disabled=True))
+            return
+        self.add_options([Option(m.render(highlight=highlight, width=width), id=str(i))
+                          for i, m in enumerate(messages)])
+        if follow:
+            self.highlighted = self.option_count - 1
+            self.scroll_end(animate=False)
 
+    def plain(self) -> str:
+        return "\n".join(m.render().plain for m in self.messages)
 
 class ConflictsPanel(Static):
     def show(self, rows: list | None, flash: set | None = None) -> None:

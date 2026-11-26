@@ -178,6 +178,17 @@ A session with `--settings` registering `type: "http"` hooks to `http://127.0.0.
 
 **Decision:** on Windows, the per-agent `ccdash host` serves the agent's hook endpoint on localhost. SessionStart stays a command hook (async, once per session). The tmux runner uses command hooks throughout. If `allowedHttpHookUrls` is set, command hooks are used everywhere.
 
+### Real-Claude check after Phase 2 (`scripts/real_claude_check.py`)
+
+Two Haiku agents started through ccdash itself, using the Windows host, HTTP hooks and `--session-id`, in the trusted spike repo:
+
+- Each agent was running about 1 s after `new_agent`.
+- Both sessions used the session id ccdash passed.
+- Status went starting → idle → working → idle/finished within a second of each hook.
+- `rc-beta` announced `Files: notes-rc-beta.txt` to `rc-alpha` with `SendMessage`. The receiving `UserPromptSubmit` marked it delivered.
+- Stop produced `SessionEnd` (stopped), and restart resumed the same session id with `--resume`.
+- Delete removed both worktrees and branches.
+
 ## Side effects on this machine
 
 - Accepting the trust dialog once added the temp repo to `~/.claude.json` (`projects["C:/…/scratchpad/p0/repo"].hasTrustDialogAccepted = true`). This is also where ccdash can check trust before spawning.

@@ -75,6 +75,9 @@ class AgentView:
     setup: str = ""
     exit: dict | None = None
     record: AgentRecord | None = None
+    hooks_missing: bool = False  # alive, but no hook event this run (check the hooks setup)
+    stale: bool = False  # working, but no event for 10 minutes
+    last: str = ""
 
     def to_json(self) -> dict:
         return {k: getattr(self, k) for k in (
@@ -221,11 +224,12 @@ class Workspace:
         session_id = None if resume else str(uuid.uuid4())
         args = claude_args(rec.name, session_id=session_id, resume=resume, model=rec.model,
                            permission_mode=rec.permission_mode, prompt=prompt)
-        info = self.runner.start(rec, claude_command(self.cfg), args, agent_env(self.state, rec.name),
+        started = time.time()
+        info = self.runner.start(rec, claude_command(self.cfg), args, agent_env(self.state, rec.name, rec.worktree),
                                  Path(rec.worktree), settings=self.hook_settings(rec))
         self.registry.update(rec.name, lifecycle="running", stop_requested=False,
                              claude_session_id=resume or session_id, session=info.get("pipe") or info.get("session", ""),
-                             host_pid=info.get("host_pid"), claude_pid=info.get("claude_pid"))
+                             host_pid=info.get("host_pid"), claude_pid=info.get("claude_pid"), started_at=started)
 
     # -- stop / restart ---------------------------------------------------------------
     def stop(self, name: str, wait: bool = True, timeout: float = 10) -> bool:

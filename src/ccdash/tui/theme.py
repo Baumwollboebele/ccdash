@@ -11,10 +11,10 @@ DIM = "bright_black"  # Rich name: the terminal palette's grey, readable on ligh
 
 STATUS_STYLE = {
     "working": "green", "running": "green", "needs_input": "yellow", "finished": "blue", "idle": "default",
-    "stopped": DIM, "crashed": "red", "setup": ACCENT, "starting": ACCENT, "untracked": DIM, "deleted": DIM,
+    "stopped": DIM, "stopping": DIM, "crashed": "red", "setup": ACCENT, "starting": ACCENT, "untracked": DIM, "deleted": DIM,
 }
 STATUS_GLYPH = {
-    "working": "●", "running": "●", "needs_input": "◐", "finished": "✓", "idle": "○", "stopped": "■",
+    "working": "●", "running": "●", "needs_input": "◐", "finished": "✓", "idle": "○", "stopped": "■", "stopping": "□",
     "crashed": "✕", "setup": "◌", "starting": "◌", "untracked": "?", "deleted": "·",
 }
 STATUS_LABEL = {"needs_input": "needs input"}

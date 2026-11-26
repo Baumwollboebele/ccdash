@@ -161,3 +161,24 @@ ModalScreen {
     text-overflow: ellipsis;
 }
 
+
+#messages {
+    height: 1fr;
+    background: $ccdash-bg;
+    border: none;
+    padding: 0;
+    scrollbar-size-vertical: 1;
+}
+
+#messages > .option-list--option-highlighted, #messages:focus > .option-list--option-highlighted {
+    background: $ccdash-bg;
+    text-style: bold;
+}
+
+#messages > .option-list--option-hover {
+    background: $ccdash-bg;
+}
+
+#messages > .option-list--option-disabled {
+    color: $ccdash-dim;
+}
