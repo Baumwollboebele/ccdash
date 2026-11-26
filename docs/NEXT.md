@@ -27,15 +27,13 @@ If a git remote exists, push after each commit.
 | 4: conflicts and merge | not started | |
 | 5: extras | not started | |
 
-Not pushed yet. The repo has no git remote, and `gh` is not installed.
+Pushed to the private repo https://github.com/Baumwollboebele/ccdash, branch `main` (renamed from `master`). `gh` is installed at `C:\Program Files\GitHub CLI\gh.exe` and logged in; this shell may need the full path.
 
 ## What is left
 
-### 1. Push to GitHub (needs the user)
+### 1. Push to GitHub
 
-- Either the user runs `! winget install --id GitHub.cli -e` and `! gh auth login`, then: `"C:\Program Files\GitHub CLI\gh.exe" repo create ccdash --private --source . --push`.
-- Or the user creates an empty repo at github.com/new and gives the URL: `git remote add origin <url>` and `git push -u origin <branch>`.
-- Ask first: rename `master` to `main` before pushing (recommended)? Public or private?
+Done. Push after each commit with `git push`.
 
 ### 2. Finish Phase 3 (look and feel)
 
