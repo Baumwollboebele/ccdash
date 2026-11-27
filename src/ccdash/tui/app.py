@@ -19,14 +19,16 @@ from ..dashboard import Dashboard, Progress
 from ..workspace import Workspace, WorkspaceError
 from .agents_table import AgentsTable
 from .anim import Animator, lerp_hex, pulse_color, spinner_glyph
-from .modals import ConfirmDeleteModal, HelpModal, MessageModal, NewAgentModal, TextInputModal
+from .filemap import FileMapView
+from .modals import ChoiceModal, ConfirmDeleteModal, HelpModal, MessageModal, NewAgentModal, TextInputModal
 from .network import CommsView, NetworkView
 from .panels import ConflictsPanel, DetailsPanel, MessagesPanel
 from . import theme
 from .theme import ACCENT, DIM, THEMES, pick_theme, reduced_motion
 
 MAIN_ACTIONS = {"new", "stop", "restart", "attach", "peek", "talk", "broadcast", "merge", "diff", "delete", "filter",
-                "network", "filemap", "comms", "toggle_hidden", "adopt", "help", "quit_dash"}
+                "network", "filemap", "comms", "claim", "toggle_hidden", "adopt", "help", "quit_dash"}
+VIEW_TITLES = {"network": "Network", "filemap": "File map"}
 
 FOOTER_KEYS = [("n", "new"), ("s", "stop"), ("r", "restart"), ("a", "attach"), ("p", "peek"), ("t", "talk"),
                ("b", "broadcast"), ("m", "merge"), ("d", "diff"), ("x", "delete"), ("?", "help"), ("q", "quit")]
@@ -41,16 +43,20 @@ class CCDashApp(App):
         Binding("a", "attach", "attach"), Binding("p", "peek", "peek"), Binding("t", "talk", "talk"),
         Binding("b", "broadcast", "broadcast"), Binding("m", "merge", "merge"), Binding("d", "diff", "diff"),
         Binding("x", "delete", "delete"), Binding("slash", "filter", "filter"), Binding("g", "network", "network"),
-        Binding("f", "filemap", "file map"), Binding("c", "comms", "comms"),
+        Binding("f", "filemap", "file map"), Binding("c", "comms", "comms"), Binding("o", "claim", "owns"),
         Binding("H", "toggle_hidden", "hidden"), Binding("A", "adopt", "adopt"),
         Binding("question_mark", "help", "help"), Binding("q", "quit_dash", "quit"),
     ]
 
-    def __init__(self, ws: Workspace, attach_fn=None, no_anim: bool = False):
+    def __init__(self, ws: Workspace, attach_fn=None, no_anim: bool = False, external_fn=None):
         super().__init__()
         self.ws = ws
         self.dash = Dashboard(ws)
+        self.dash.conflicts.active = True  # this dashboard sends the notices (shared interface, what landed)
         self.attach_fn = attach_fn
+        self.external_fn = external_fn  # tests: receives the argv of a pager instead of running it
+        self._demo_rows: list | None = None
+        self._refreshing = self._refresh_again = self._git_refreshing = self._git_again = False
         self.animate = ws.cfg.animations and not reduced_motion(no_anim)
         self.frame = 0
         self.peek_on = False
@@ -58,10 +64,9 @@ class CCDashApp(App):
         self._booted = False
         self._watch_stop = threading.Event()
         self.motion = Animator(self, enabled=self.animate)
-        self.view_mode = "details"  # details | network   (comms is a separate full-screen class)
+        self.view_mode = "details"  # details | network | filemap   (comms is a separate full-screen class)
         self._prev: dict[str, tuple[int, str]] = {}
         self._seen_messages = 0
-        self._conflict_rows: list = []
         self._conflict_keys: set = set()
         for theme in THEMES:  # before the stylesheet is parsed: it uses $ccdash-bg / $ccdash-dim
             self.register_theme(theme)
@@ -78,6 +83,7 @@ class CCDashApp(App):
                 p.border_title = "Details"
                 yield DetailsPanel(id="details")
                 yield NetworkView(id="network")
+                yield FileMapView(id="filemap")
             with Container(id="messages-panel", classes="panel") as p:
                 p.border_title = "Messages"
                 yield MessagesPanel(id="messages")
@@ -95,8 +101,6 @@ class CCDashApp(App):
         self._layout(self.size.width)
         self.table.focus()
         self.render_all()
-        self._refreshing = False
-        self._refresh_again = False
         self.request_refresh()
         self.refresh_git_worker()
         self.watch_events()
@@ -141,7 +145,7 @@ class CCDashApp(App):
 
     def request_refresh(self) -> None:
         """Coalesce refresh requests: never more than one runtime refresh in flight."""
-        if getattr(self, "_refreshing", False):
+        if self._refreshing:
             self._refresh_again = True
             return
         self._refreshing = True
@@ -206,10 +210,27 @@ class CCDashApp(App):
         self._update_peek()
         self.call_from_thread(self._render_details)
 
-    @work(thread=True, exclusive=True, group="git")
     def refresh_git_worker(self) -> None:
-        self.dash.refresh_git()
-        self.call_from_thread(self.render_all)
+        """Coalesce git refreshes too: one in flight, at most one more queued behind it."""
+        if self._git_refreshing:
+            self._git_again = True
+            return
+        self._git_refreshing = True
+        self._git_worker()
+
+    @work(thread=True, group="git")
+    def _git_worker(self) -> None:
+        try:
+            self.dash.refresh_git()
+        finally:
+            self.call_from_thread(self._git_done)
+
+    def _git_done(self) -> None:
+        self._git_refreshing = False
+        self.render_all()
+        if self._git_again:
+            self._git_again = False
+            self.refresh_git_worker()
 
     async def refresh_now(self) -> None:
         await asyncio.to_thread(self.dash.refresh_all)
@@ -314,14 +335,30 @@ class CCDashApp(App):
             return set()
         return self.dash.conflicts.red_pairs()
 
+    def touch_map(self) -> dict:
+        return self.dash.conflicts.touch_map() if self.dash.conflicts is not None else {}
+
     def show_conflict_rows(self, rows: list) -> None:
-        self._conflict_rows = rows
+        """Draw these rows instead of the tracker's (demos and tests)."""
+        self._demo_rows = rows
         self._render_conflicts()
         self.motion.ensure()
+
+    def conflict_rows(self) -> list:
+        if self._demo_rows is not None:
+            return self._demo_rows
+        return self.dash.conflicts.rows if self.dash.conflicts is not None else []
+
+    def conflicts_text(self) -> str:
+        return "\n".join(r.render().plain for r in self.conflict_rows())
 
     @property
     def network(self) -> NetworkView:
         return self.query_one("#network", NetworkView)
+
+    @property
+    def filemap(self) -> FileMapView:
+        return self.query_one("#filemap", FileMapView)
 
     @property
     def comms(self) -> CommsView:
@@ -329,6 +366,9 @@ class CCDashApp(App):
 
     def network_text(self) -> str:
         return self.network.last_text.plain
+
+    def filemap_text(self) -> str:
+        return self.filemap.last_text.plain
 
     def comms_text(self) -> str:
         return self.comms.list_text()
@@ -338,16 +378,25 @@ class CCDashApp(App):
             self.network.show(views, self.dash.messages.items, self.red_pairs(), animate=self.animate,
                               merged_progress=lambda n: self.motion.progress(("merged", n)),
                               default_branch=self.ws.default_branch)
+        elif self.view_mode == "filemap":
+            self.filemap.show(self.touch_map(), selected=self.selected_name())
         if self.has_class("view-comms"):
             self.comms.show(views, self.dash.messages.items, animate=self.animate, flights=self.network.flights)
 
-    def action_network(self) -> None:
-        self.view_mode = "network" if self.view_mode != "network" else "details"
-        net = self.view_mode == "network"
-        self.network.display = net
-        self.query_one("#details", DetailsPanel).display = not net
-        self.query_one("#details-panel").border_title = "Network" if net else (self.selected_name() or "Details")
+    def _set_view(self, mode: str) -> None:
+        """What the left middle panel shows: the selected agent's details, the network or the file map."""
+        self.view_mode = mode
+        self.network.display = mode == "network"
+        self.filemap.display = mode == "filemap"
+        self.query_one("#details", DetailsPanel).display = mode == "details"
+        self.query_one("#details-panel").border_title = VIEW_TITLES.get(mode) or self.selected_name() or "Details"
         self.render_all()
+
+    def action_network(self) -> None:
+        self._set_view("details" if self.view_mode == "network" else "network")
+
+    def action_filemap(self) -> None:
+        self._set_view("details" if self.view_mode == "filemap" else "filemap")
 
     def action_comms(self) -> None:
         self.toggle_class("view-comms")
@@ -396,14 +445,17 @@ class CCDashApp(App):
         name = self.selected_name()
         v = self.dash.get(name) if name else None
         panel = self.query_one("#details-panel")
-        if self.view_mode == "network":
+        if self.view_mode != "details":
             return
         panel.border_title = name or "Details"
         activity = self.dash.activity.get(name) if (self.dash.activity is not None and name) else None
+        tracker = self.dash.conflicts if name else None
         self.query_one("#details", DetailsPanel).show(
             v, repo_rel=self.ws.repo.rel, default_branch=self.ws.default_branch, default_sha=self.dash.default_sha,
             activity=activity, peek=self.peek_lines if self.peek_on else None, frame=self.frame,
-            animate=self.animate, owns=self._owns(name), tests=getattr(activity, "tests", "") if activity else "")
+            animate=self.animate, owns=self._owns(name), tests=getattr(activity, "tests", "") if activity else "",
+            conflict=tracker.conflict_files(name) if tracker is not None else (),
+            pr=tracker.pull_request(name) if tracker is not None else None)
 
     def _owns(self, name: str | None) -> list[str]:
         if not name or self.dash.conflicts is None:
@@ -415,7 +467,7 @@ class CCDashApp(App):
         self.query_one("#messages", MessagesPanel).show(msgs, highlight=self.selected_name())
 
     def _render_conflicts(self) -> None:
-        rows = self.dash.conflicts.rows if self.dash.conflicts is not None else self._conflict_rows
+        rows = self.conflict_rows()
         if self._booted:  # a collision that appears while you watch slides in with a red flash
             for r in rows:
                 if r.key not in self._conflict_keys:
@@ -578,9 +630,6 @@ class CCDashApp(App):
         else:
             self._peek_worker()
 
-    def _not_yet(self, what: str) -> None:
-        self.notify(f"{what} is not available yet.", severity="warning")
-
     def action_talk(self) -> None:
         from .. import messaging
 
@@ -619,20 +668,168 @@ class CCDashApp(App):
         t = getattr(self.query_one("#details", DetailsPanel), "last_text", None)
         return t.plain if t is not None else ""
 
+    # -- merge menu ----------------------------------------------------------------------
     def action_merge(self) -> None:
-        self._not_yet("The merge menu")
+        v = self._selected_view()
+        if v is None:
+            return
+        if v.status == "untracked" or not v.branch:
+            self.notify(f"{v.name} has no agent branch to merge.", severity="warning")
+            return
+        self._open_merge_menu(v.name)
 
+    @work(thread=True)
+    def _open_merge_menu(self, name: str) -> None:
+        from .. import merge
+
+        v = self.dash.get(name)
+        if v is None:
+            return
+        menu = merge.menu(self.ws, v, self.dash)  # asks git (and gh) what is possible right now
+        if not menu.choices:
+            self.call_from_thread(self.notify, menu.note, title=f"Nothing to do for {name}", severity="warning",
+                                  timeout=8)
+            return
+        self.call_from_thread(self.push_screen, ChoiceModal(menu.title, menu.choices, note=menu.note, modal_id="merge"),
+                              lambda action: action and self._merge_action(name, action))
+
+    def _merge_action(self, name: str, action: str) -> None:
+        from .. import merge
+
+        if action == "rebase":
+            self._run(lambda: merge.ask_rebase(self.ws, name, self.dash))
+        elif action == "local":
+            self.notify(f"Merging {name} into {self.ws.default_branch}…")
+            self._merge_local(name)
+        elif action == "pr":
+            self.notify(f"Pushing {name}'s branch and opening a pull request…")
+            self._open_pr(name)
+        elif action == "cleanup":
+            self._cleanup(name)
+
+    @work(thread=True)
+    def _merge_local(self, name: str) -> None:
+        from .. import merge
+
+        try:
+            res = merge.merge_local(self.ws, name, self.dash)
+        except (WorkspaceError, RuntimeError) as exc:
+            self.call_from_thread(self.notify, str(exc), title="Merge failed", severity="error", timeout=12)
+            self.dash.refresh_all()
+            self.call_from_thread(self.render_all)
+            return
+        told = f" Told {', '.join(res.notified)}." if res.notified else ""
+        self.call_from_thread(self.notify, f"{name} landed on {self.ws.default_branch} ({res.sha[:7]}).{told}",
+                              title="Merged")
+        self.dash.refresh_runtime()
+        self.call_from_thread(self.render_all)
+        self.call_from_thread(self._offer_cleanup, name)
+
+    def _offer_cleanup(self, name: str) -> None:
+        modal = ChoiceModal(f"{name} is merged", [("y", "yes", "delete its worktree and branch"),
+                                                  ("n", "no", "keep them (x deletes later)")], modal_id="cleanup")
+        self.push_screen(modal, lambda answer: answer == "yes" and self._cleanup(name))
+
+    @work(thread=True)
+    def _cleanup(self, name: str) -> None:
+        """Delete a merged agent; if work turned up that would be lost, ask the usual way."""
+        try:
+            check = self.ws.delete_check(name)
+            if check.needs_confirmation:
+                self.call_from_thread(self.push_screen, ConfirmDeleteModal(check),
+                                      lambda confirm: confirm and self._run(
+                                          lambda: self.ws.delete(name, confirm=confirm), done=f"Deleted {name}."))
+                return
+            self.ws.delete(name)
+            self.call_from_thread(self.notify, f"Deleted {name}: worktree and branch removed.")
+        except (WorkspaceError, RuntimeError) as exc:
+            self.call_from_thread(self.notify, str(exc), severity="error", timeout=8)
+        self.dash.refresh_all()
+        self.call_from_thread(self.render_all)
+
+    @work(thread=True)
+    def _open_pr(self, name: str) -> None:
+        from .. import merge
+
+        try:
+            url = merge.open_pr(self.ws, name, self.dash)
+        except (WorkspaceError, RuntimeError) as exc:
+            self.call_from_thread(self.notify, str(exc), title="Pull request failed", severity="error", timeout=12)
+            return
+        self.call_from_thread(self.notify, url or f"Opened a pull request for {name}.", title="PR opened", timeout=10)
+        self.dash.refresh_git()
+        self.call_from_thread(self.render_all)
+
+    # -- diff, filter, claims -----------------------------------------------------------------
     def action_diff(self) -> None:
-        self._not_yet("Diff")
+        v = self._selected_view()
+        if v is None:
+            return
+        if not v.branch:
+            self.notify(f"{v.name} has no branch to diff.", severity="warning")
+            return
+        self._diff(v.name, v.branch, v.dirty)
+
+    @work(thread=True)
+    def _diff(self, name: str, branch: str, dirty: int) -> None:
+        from .. import merge
+
+        default = self.ws.default_branch
+        if not merge.has_diff(self.ws, branch):
+            tail = f" Its {dirty} uncommitted change(s) are only in the worktree." if dirty else ""
+            self.call_from_thread(self.notify, f"{branch} has no commits that differ from {default}.{tail}")
+            return
+        argv, env = merge.diff_command(self.ws, branch)
+        self.call_from_thread(self.run_external, argv, env, f"{default}...{branch} · q returns to ccdash")
+
+    def run_external(self, argv: list[str], env: dict | None = None, banner: str = "") -> None:
+        """Give the terminal to another program (a pager), like attach does, then come back."""
+        import subprocess
+
+        if self.external_fn is not None:
+            self.external_fn(argv)
+            return
+        driver = getattr(self, "_driver", None)
+        if driver is None or not driver.can_suspend:
+            self.notify("This terminal cannot be handed over; run it yourself: " + " ".join(argv), severity="warning",
+                        timeout=10)
+            return
+        with self.suspend():
+            if banner:
+                print(f"\x1b[2m{banner}\x1b[0m", flush=True)
+            subprocess.call(argv, cwd=str(self.ws.repo.main_root), env=env)
+        self.request_refresh()
 
     def action_filter(self) -> None:
-        self._not_yet("Filter")
+        modal = TextInputModal("Filter agents", placeholder="name, status or file path · empty shows all",
+                               value=self.dash.filter, modal_id="filter",
+                               hint="Matches the name, the status, the task, and files the agent changed.")
+        self.push_screen(modal, self._set_filter)
 
+    def _set_filter(self, text: str | None) -> None:
+        if text is None:  # esc keeps the filter
+            return
+        self.dash.filter = text.strip()
+        self.render_all()
 
-    def action_filemap(self) -> None:
-        self._not_yet("The file map")
+    def action_claim(self) -> None:
+        v = self._selected_view()
+        tracker = self.dash.conflicts
+        if v is None or tracker is None:
+            return
+        if v.status == "untracked":
+            self.notify(f"{v.name} is an untracked worktree; press A to adopt it first.", severity="warning")
+            return
+        modal = TextInputModal(f"Paths {v.name} owns", value=" ".join(tracker.user_claims(v.name)), modal_id="claim",
+                               placeholder="paths or globs, separated by spaces · empty clears them",
+                               hint="Another agent that touches or claims one of them shows as an overlap. "
+                                    "Agents announce their own scope with a `Files:` line.")
+        self.push_screen(modal, lambda text: text is not None and self._claim(v.name, text))
 
-
+    def _claim(self, name: str, text: str) -> None:
+        paths = self.dash.conflicts.claim(name, text.split())
+        self.notify(f"{name} owns {', '.join(paths)}." if paths else f"Cleared your claims for {name}.")
+        self.request_refresh()
 
 
 def run(no_anim: bool = False, cwd: Path | None = None) -> int:

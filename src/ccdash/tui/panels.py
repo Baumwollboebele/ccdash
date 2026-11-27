@@ -46,7 +46,7 @@ def shimmer(text: str, frame: int, width: int = 4) -> Text:
 class DetailsPanel(Static):
     def show(self, v: AgentView | None, *, repo_rel, default_branch: str, default_sha: str, activity=None,
              peek: list[str] | None = None, frame: int = 0, animate: bool = False, owns: list[str] | None = None,
-             tests: str = "") -> None:
+             tests: str = "", conflict: tuple = (), pr=None) -> None:
         if v is None:
             self.last_text = Text("No agent selected. Press n to start one.", style=DIM)
             self.update(self.last_text)
@@ -72,8 +72,14 @@ class DetailsPanel(Static):
         kv(t, "Commits", commits)
         if v.dirty:
             kv(t, "Dirty", f"{v.dirty} file(s): " + ", ".join(v.dirty_paths[:4]) + (" …" if v.dirty > 4 else ""))
+        if v.merge_state == "conflict" and conflict:
+            kv(t, "Conflict", f"with {default_branch} in " + ", ".join(conflict[:4]) + (" …" if len(conflict) > 4 else ""),
+               style="red")
+        if pr is not None:
+            kv(t, "PR", Text.assemble((f"#{pr.number} {pr.state.lower()}", "cyan"),
+                                      (f" {pr.checks}" if pr.checks else ""), (f"  {pr.url}", DIM)))
         if owns:
-            kv(t, "Owns", "  ".join(owns[:6]))
+            kv(t, "Owns", "  ".join(owns[:6]) + (f"  +{len(owns) - 6}" if len(owns) > 6 else ""))
         if tests:
             kv(t, "Tests", tests)
         if v.setup and v.setup not in ("ok", ""):

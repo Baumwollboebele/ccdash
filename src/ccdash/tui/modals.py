@@ -203,9 +203,11 @@ class ChoiceModal(ModalScreen[str | None]):
 HELP = [
     ("n", "new agent"), ("s", "stop (keeps worktree and branch)"), ("r", "restart / resume"),
     ("a / enter", "attach (Ctrl+] or Ctrl-b d detaches)"), ("p", "peek: live output in the details panel"),
-    ("t", "talk to the selected agent"), ("b", "broadcast to every running agent"), ("m", "merge menu"),
-    ("d", "diff against the default branch"), ("x", "delete worktree and branch"), ("/", "filter"),
-    ("g", "network view"), ("f", "file map"), ("c", "comms view"), ("H", "show hidden (deleted) agents"),
+    ("t", "talk to the selected agent"), ("b", "broadcast to every running agent"),
+    ("m", "merge menu: rebase, merge locally, open a PR"), ("d", "diff against the default branch"),
+    ("x", "delete worktree and branch"), ("/", "filter by name, status or file"),
+    ("o", "claim paths the selected agent owns"), ("g", "network view"), ("f", "file map"), ("c", "comms view"),
+    ("H", "show hidden (deleted) agents"),
     ("A", "adopt an untracked worktree"), ("q", "quit (agents keep running)"),
 ]
 

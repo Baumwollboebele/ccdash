@@ -189,6 +189,24 @@ Two Haiku agents started through ccdash itself, using the Windows host, HTTP hoo
 - Stop produced `SessionEnd` (stopped), and restart resumed the same session id with `--resume`.
 - Delete removed both worktrees and branches.
 
+### A second machine (Nov 27, 2026)
+
+Phases 3 to 5 were finished on another Windows machine, which differs in ways that mattered:
+
+| Component | First machine | Second machine |
+| --- | --- | --- |
+| Claude Code | 2.1.317 | 2.1.332 |
+| git | 2.56.1 | **2.35.1** (no `merge-tree --write-tree`, which needs 2.38) |
+| Python | python.org 3.12 | uv-managed 3.12 for the venv (python.org 3.13 also installed) |
+| gh, tmux, less on PATH | no | no (Git for Windows ships its own `less`, which git finds) |
+| Start of a bare process (`cmd /c exit`) | not measured | about 40 ms |
+| `python -I -S -c pass` | 33 ms | about 70 ms |
+| Full hook call (SessionStart command hook) | 58 ms | 140–180 ms |
+
+- **Old git.** `git merge-tree --write-tree` exits 129 on git 2.35. `gitstate.MergeTreeCache` now asks `git version` once and falls back to the three-way form, `git merge-tree <merge-base> <ours> <theirs>`, and reads conflicts from its output (`gitstate.legacy_conflicts`): both sides changed a file and the merged diff carries conflict markers, both added it, or one side deleted what the other changed. It has no rename detection. The tests run both paths; the `--write-tree` ones skip on old git.
+- **Slow process creation** (endpoint protection). The hook timing test's 150 ms budget now scales to three bare interpreter starts where those are slow. `cc "task"` to a running agent took 3 to 5 s here (budget 5 s), and the first run after a change can exceed it once; it passes on a rerun.
+- **`claude agents --json --all`** prints an array. A background session looks like `{"id": "0a800302", "kind": "background", "cwd": …, "startedAt": <ms>, "sessionId": "0a800302-237e-…", "name": …, "state": "blocked"}`; an interactive one has `pid` and `status` (`"idle"`) instead of `id` and `state`. The short id is the start of the session id. `--cwd <path>` filters by start directory. This is what the `bg` runner reads.
+
 ## Side effects on this machine
 
 - Accepting the trust dialog once added the temp repo to `~/.claude.json` (`projects["C:/…/scratchpad/p0/repo"].hasTrustDialogAccepted = true`). This is also where ccdash can check trust before spawning.

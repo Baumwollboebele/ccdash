@@ -83,6 +83,7 @@ def sandbox(tmp_path, monkeypatch):
     monkeypatch.setenv("CCDASH_CLAUDE_SETTINGS", str(home / "claude-settings.json"))
     monkeypatch.setenv("CCDASH_CLAUDE", json.dumps([sys.executable, str(FAKE_CLAUDE)]))
     monkeypatch.setenv("CCDASH_FAKE_HOME", str(home / "fake-claude"))
+    monkeypatch.setenv("CCDASH_GH", json.dumps(["ccdash-tests-have-no-gh"]))  # never the real gh; see fake_gh.py
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home / "claude-config"))
     monkeypatch.setenv("CCDASH_REDUCED_MOTION", "1")
     for var in ("CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN",

@@ -109,9 +109,11 @@ One screen, four panels: the agent table on top, details of the selected agent o
 | `d` | Diff | Opens `git diff main...branch` in a pager |
 | `x` | Delete | Removes worktree and branch; refuses unmerged work without a second confirmation |
 | `/` | Filter | By name, status or file path |
+| `o` | Owns | Claim paths or globs for the selected agent (see Coordination) |
+| `g` / `f` / `c` | Views | Network, File map, Comms (see Look and feel) |
 | `q` | Quit | Agents keep running |
 
-Colors: working green, needs input yellow and sorted to the top, conflict red, finished blue, stopped grey. The header counts must match the table.
+Colors: working green, needs input yellow and sorted to the top, conflict red, finished blue, stopped grey. The header counts must match the table; its conflict count is the number of predicted merge conflicts (the red rows), not every row of the Conflicts panel.
 
 ## Look and feel
 
@@ -224,12 +226,14 @@ Agents avoid breaking each other in four layers. Each is a backstop for the one 
 
 1. **Protocol prompt (prevention).** Every agent starts with the coordination protocol from the existing `cc` script, plus the live agent list from `agents.json` with each agent's task and owned paths. The agent must announce its scope with `SendMessage` before editing, and warn dependents before changing a shared interface. Keep the protocol text in `src/ccdash/protocol.md` so it can be edited without code changes.
 2. **File ownership (detection, live).** Every `Edit`/`Write`/`MultiEdit`/`NotebookEdit` event adds its path to that agent's touched set. A path touched by two running agents produces an **overlap** row. A path may also be claimed up front: the agent's announced scope is parsed from its first `SendMessage` if it contains a `Files:` line, and the user can claim paths for an agent from the details panel.
-3. **Predicted merge conflicts (detection, git).** For every agent branch, run `git merge-tree --write-tree --name-only <default-branch> <branch>`; exit code 1 means a conflict, and the output lists the files. Also run it pairwise between agent branches that share a touched file. Cache results by the commit-SHA pair. Uncommitted work is not covered by this check; the overlap check covers it.
+3. **Predicted merge conflicts (detection, git).** For every agent branch, run `git merge-tree --write-tree --name-only <default-branch> <branch>`; exit code 1 means a conflict, and the output lists the files. Also run it pairwise between agent branches that share a touched file. Cache results by the commit-SHA pair. Uncommitted work is not covered by this check; the overlap check covers it. On git older than 2.38, which has no `--write-tree`, ccdash uses the three-way `git merge-tree <merge-base> <ours> <theirs>` and reads the conflicts from its output (no rename detection).
 4. **Guard mode (enforcement, optional).** With `guard = "warn"` or `"block"` in config, the `PreToolUse` hook checks the target path against other agents' claims. On a hit it returns a hook decision (`hookSpecificOutput.permissionDecision` plus `permissionDecisionReason` / `additionalContext`): `warn` lets the edit through but adds context telling Claude which agent owns the file and to message it; `block` denies the edit with that reason. This needs a synchronous `PreToolUse` hook, so it costs one Python start (~60 ms on Windows) per tool call while enabled. Default is `off` until Phase 5.
 
-**Shared interfaces.** The repo config lists globs that many agents depend on, for example `src/api/**`, `migrations/**`, `src/types/**`, `package.json`. When an agent's branch changes one, the Conflicts panel shows a **shared** row. If that agent did not send a message mentioning the change within 2 minutes, ccdash broadcasts a short notice to all other running agents itself.
+**Shared interfaces.** The repo config lists globs that many agents depend on, for example `src/api/**`, `migrations/**`, `src/types/**`, `package.json`. When an agent's branch changes one, the Conflicts panel shows a **shared** row. If that agent did not send a message mentioning the change within 2 minutes, ccdash broadcasts a short notice to all other running agents itself. It does so once per agent and glob, and only from an open dashboard: `cc ls` and the other commands never send anything.
 
-**After a merge.** When any agent branch lands on the default branch, ccdash messages every other running agent: what landed, which files changed, and whether their branch now has predicted conflicts.
+**After a merge.** When any agent branch lands on the default branch, ccdash messages every other running agent: what landed, which files changed, and whether their branch now has predicted conflicts. This also covers a branch merged outside ccdash, as long as a dashboard saw it unmerged before.
+
+**What counts as touched.** While an agent runs: the files its hooks reported as edited, its uncommitted files and what its branch changed. For a stopped agent only what git still shows (uncommitted and unmerged files). For a merged agent only new uncommitted files. Claims use `.gitignore` syntax.
 
 **Messages panel.** Shows every `SendMessage` recorded by `PreToolUse` (`tool_input.to`, `tool_input.summary`, first line of `tool_input.message`; `Enter` expands), plus messages you sent with `t`/`b`, plus ccdash's automatic notices marked `ccdash →`. The receiving side is visible too. Claude delivers an incoming message as a `UserPromptSubmit` whose prompt is `<cross-session-message from="…" from-name="<sender>" from-mode="…">body</cross-session-message>`, so a message is marked delivered when that event arrives. Delivery from ccdash to an agent types the message into the agent's terminal (host pipe on Windows, `tmux send-keys` elsewhere). Phase 0 could not confirm the messaging socket's protocol: the docs define only an auth line. Claude queues text typed while it is busy and submits it after the turn, so ccdash may type at any time except while the agent is in needs input, because keystrokes would answer the open dialog.
 
@@ -299,7 +303,7 @@ The `↑↓ MAIN` column is `git rev-list --left-right --count <default>...<bran
 **Merge menu (`m`)**
 
 - **Ask agent to rebase**: sends "Rebase on \<default>, resolve conflicts, run the tests, report back" to the agent. This is the default for conflicts, since the agent knows its own changes.
-- **Merge locally**: only offered when the state is ready and the main checkout is clean and on the default branch. Runs `git merge --no-ff cc/<name>` in the main checkout, then the optional `test` command from config. On failure, `git merge --abort` and report.
+- **Merge locally**: only offered when the state is ready and the main checkout is clean (no uncommitted changes to tracked files) and on the default branch. Runs `git merge --no-ff --no-commit cc/<name>` in the main checkout, then the optional `test` command from config on the merged tree, then commits. On a conflict or a failed test, `git merge --abort` and report; the default branch is unchanged.
 - **Open PR**: `git push -u origin cc/<name>` then `gh pr create --fill --head cc/<name>`. Hidden when `gh` is missing or not authenticated.
 
 After any successful merge: refresh all branches' conflict predictions, send the "what landed" notice from the Coordination section, and offer cleanup (delete worktree and branch) for the merged agent.
@@ -308,7 +312,7 @@ ccdash never force-pushes, never rewrites the default branch, and never merges w
 
 ## Tech stack, config and project structure
 
-**Stack:** Python 3.11+, [Textual](https://textual.textualize.io) for the TUI, `watchfiles` for the events file, `tomllib` for config, pywinpty for the Windows runner, stdlib file locks (`msvcrt` / `fcntl`; portalocker was dropped after Phase 0 because its import alone takes 165 ms), stdlib `multiprocessing.connection` for the host's named pipe (HMAC-authenticated), `pyte` as the host's VT screen emulator (peek and repaint on attach), plain `subprocess` for git, tmux and gh. Dev only: pytest and pytest-textual-snapshot; async Pilot tests run through a small conftest hook instead of an async plugin. Install with `uv tool install .` or `pipx install .`; the entry point is `cc`. On Windows the interpreter must be a python.org or uv-managed CPython, not the Microsoft Store one, and ccdash warns at startup if it runs on the Store build. Runtime dependencies besides Python: git 2.38+ (for `merge-tree --write-tree`), Claude Code (the native Windows install on Windows), tmux 3.2+ on macOS/Linux only; `gh` optional.
+**Stack:** Python 3.11+, [Textual](https://textual.textualize.io) for the TUI, `watchfiles` for the events file, `tomllib` for config, pywinpty for the Windows runner, stdlib file locks (`msvcrt` / `fcntl`; portalocker was dropped after Phase 0 because its import alone takes 165 ms), stdlib `multiprocessing.connection` for the host's named pipe (HMAC-authenticated), `pyte` as the host's VT screen emulator (peek and repaint on attach), plain `subprocess` for git, tmux and gh. Dev only: pytest and pytest-textual-snapshot; async Pilot tests run through a small conftest hook instead of an async plugin. Install with `uv tool install .` or `pipx install .`; the entry point is `cc`. On Windows the interpreter must be a python.org or uv-managed CPython, not the Microsoft Store one, and ccdash warns at startup if it runs on the Store build. Runtime dependencies besides Python: git (2.38+ for `merge-tree --write-tree`; older versions work with a simpler prediction, see Coordination), Claude Code (the native Windows install on Windows), tmux 3.2+ on macOS/Linux only; `gh` optional.
 
 Why Python and Textual: fastest to build and iterate, good widgets (DataTable, modals, suspend for attach), and snapshot tests. A Go + Bubble Tea version is the alternative if a single static binary matters later.
 
@@ -351,13 +355,19 @@ ccdash/
     worktree.py       # create, include-copy, setup, remove
     gitignore.py      # .gitignore-syntax matcher for .worktreeinclude
     gitstate.py       # status, ahead/behind, merge-tree, cached by SHA pair
-    conflicts.py      # overlap, merge, shared, stale-base rows
-    messaging.py      # deliver to agents (typed into the terminal), message log, threads
+    conflicts.py      # ConflictTracker: overlap, merge, shared, stale-base rows; claims; notices
+    merge.py          # merge menu actions: ask to rebase, merge locally, open PR; the diff command
+    github.py         # pull requests through gh (optional)
+    activity.py       # per-agent activity from hook events
+    comms.py          # conversations for the Comms view
+    messaging.py      # deliver to agents (typed into the terminal), message log
     prompt.py         # renders protocol.md with the live agent list and the task
     protocol.md       # coordination prompt template
     tui/
-      app.py  app.tcss  theme.py
+      app.py  app.tcss  theme.py  anim.py  canvas.py
       agents_table.py  panels.py  modals.py
+      network.py        # Network and Comms views
+      filemap.py        # File map view
   tests/
     fake_claude.py    # stand-in for claude, see Testing
     test_*.py

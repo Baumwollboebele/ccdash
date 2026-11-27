@@ -4,6 +4,7 @@ Refresh speeds keep it cheap:
   refresh_events   new lines of events.jsonl (on file change, and on every runtime tick)
   refresh_runtime  registry, liveness, hook-derived status   (every 2 s or on an event)
   refresh_git      git-derived columns, conflict predictions (every 10 s, or after a commit)
+After each of the last two, the ConflictTracker lays its rows and states over the views.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from dataclasses import dataclass, field
 
 from . import gitutil
 from .activity import ActivityTracker
+from .conflicts import ConflictTracker
 from .messaging import MessageLog
 from .state import EventReader
 from .workspace import AgentView, Workspace, merge_state
@@ -49,7 +51,7 @@ class Dashboard:
         self.no_hooks_after = 15.0
         self.activity = ActivityTracker()
         self.messages = MessageLog()
-        self.conflicts = None  # Phase 4: conflicts.ConflictTracker
+        self.conflicts = ConflictTracker(ws)  # passive; the TUI sets .active so that it sends notices
         self.reader = EventReader(ws.state.events_path)
         self.git_wanted = False  # a commit happened: refresh git soon
         self.transitions: list[Transition] = []
@@ -176,4 +178,4 @@ class Dashboard:
         return {"agents": len(views),
                 "working": sum(v.status in ("working", "running", "starting", "setup") for v in views),
                 "needs_input": sum(v.status == "needs_input" for v in views),
-                "conflicts": len(self.conflicts.rows) if self.conflicts is not None else 0}
+                "conflicts": self.conflicts.count if self.conflicts is not None else 0}

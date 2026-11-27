@@ -36,6 +36,7 @@ def demo_repo(base: Path) -> Path:
         "CCDASH_CLAUDE": json.dumps([sys.executable, str(ROOT / "tests" / "fake_claude.py")]),
         "CCDASH_FAKE_HOME": str(home / "fake"), "CLAUDE_CONFIG_DIR": str(home / "claude-config"),
         "CCDASH_CLAUDE_SETTINGS": str(home / "claude-settings.json"),
+        "CCDASH_GH": json.dumps(["ccdash-demo-has-no-gh"]),  # never ask the real GitHub
     })
     for k in ("CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_MESSAGING_SOCKET", "NO_COLOR"):
         os.environ.pop(k, None)

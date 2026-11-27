@@ -1,8 +1,9 @@
 """Git-derived state per agent branch: ahead/behind, dirty files, merged, work at risk,
-and predicted merge conflicts (`git merge-tree --write-tree`, cached by SHA pair)."""
+and predicted merge conflicts (`git merge-tree`, cached by SHA pair)."""
 
 from __future__ import annotations
 
+import re
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -112,8 +113,71 @@ class MergePrediction:
     error: str = ""
 
 
+_write_tree: bool | None = None
+
+
+def supports_write_tree(cwd: Path | str) -> bool:
+    """`git merge-tree --write-tree` (a real merge, with rename detection) needs git 2.38."""
+    global _write_tree
+    if _write_tree is None:
+        m = re.search(r"(\d+)\.(\d+)", gitutil.out(["version"], cwd, check=False))
+        _write_tree = bool(m) and (int(m.group(1)), int(m.group(2))) >= (2, 38)
+    return _write_tree
+
+
+_SECTIONS = frozenset({"merged", "added in remote", "added in both", "added in local", "removed in both",
+                       "changed in both", "removed in local", "removed in remote"})
+_ENTRY = re.compile(r"^  (base|our|their|result)\s+(\d+) ([0-9a-f]{40,64}) (.*)$")
+
+
+def legacy_conflicts(out: str) -> list[str]:
+    """Conflicting paths in the output of the old `git merge-tree <base> <ours> <theirs>`.
+
+    It lists every path the trivial merge could not settle, with a diff of the merged
+    result. A conflict is: both sides changed it and the diff carries conflict markers,
+    both added it, or one side deleted what the other changed. No rename detection."""
+    files: list[str] = []
+    kind: str | None = None
+    entries: dict[str, tuple[str, str]] = {}
+    marked = in_entries = False
+
+    def close() -> None:
+        if kind is None or not entries:
+            return
+        path = next(iter(entries.values()))[1]
+        if kind == "changed in both":
+            hit = marked
+        elif kind in ("added in both", "removed in local"):  # removed here, changed there
+            hit = True
+        elif kind == "removed in remote":  # removed there: a conflict only if we changed it
+            hit = entries.get("our", ("", ""))[0] != entries.get("base", ("", ""))[0]
+        else:
+            hit = False
+        if hit and path not in files:
+            files.append(path)
+
+    for line in out.splitlines():
+        if line in _SECTIONS:
+            close()
+            kind, entries, marked, in_entries = line, {}, False, True
+            continue
+        if kind is None:
+            continue
+        if in_entries:
+            m = _ENTRY.match(line)
+            if m:
+                entries[m.group(1)] = (m.group(3), m.group(4))
+                continue
+            in_entries = False
+        if line.startswith("+<<<<<<< .our"):
+            marked = True
+    close()
+    return files
+
+
 class MergeTreeCache:
-    """`git merge-tree --write-tree --name-only` results keyed by the SHA pair."""
+    """Would merging two commits conflict, and in which files? Asked of `git merge-tree`
+    (never touches a worktree or the index) and kept by SHA pair."""
 
     def __init__(self, repo: Repo):
         self.repo = repo
@@ -126,15 +190,30 @@ class MergeTreeCache:
             hit = self._cache.get(key)
         if hit is not None:
             return hit
-        p = gitutil.git(["merge-tree", "--write-tree", "--name-only", "--no-messages", ours_sha, theirs_sha],
-                        self.repo.main_root, check=False)
-        if p.returncode == 0:
-            res = MergePrediction(conflict=False)
-        elif p.returncode == 1:
-            lines = p.stdout.splitlines()[1:]  # first line is the tree id
-            res = MergePrediction(conflict=True, files=tuple(x for x in lines if x))
-        else:
-            res = MergePrediction(conflict=False, error=p.stderr.strip())
+        root = self.repo.main_root
+        res = self._write_tree(ours_sha, theirs_sha) if supports_write_tree(root) else self._legacy(ours_sha, theirs_sha)
         with self._lock:
             self._cache[key] = res
         return res
+
+    def _write_tree(self, ours: str, theirs: str) -> MergePrediction:
+        p = gitutil.git(["merge-tree", "--write-tree", "--name-only", "--no-messages", ours, theirs],
+                        self.repo.main_root, check=False)
+        if p.returncode == 0:
+            return MergePrediction(conflict=False)
+        if p.returncode == 1:
+            lines = p.stdout.splitlines()[1:]  # first line is the tree id
+            return MergePrediction(conflict=True, files=tuple(x for x in lines if x))
+        return MergePrediction(conflict=False, error=p.stderr.strip())
+
+    def _legacy(self, ours: str, theirs: str) -> MergePrediction:
+        """git older than 2.38: the three-way `merge-tree <base> <ours> <theirs>`."""
+        root = self.repo.main_root
+        base = gitutil.git(["merge-base", ours, theirs], root, check=False)
+        if base.returncode != 0 or not base.stdout.strip():
+            return MergePrediction(conflict=False, error="no common ancestor")
+        p = gitutil.git(["merge-tree", base.stdout.split()[0], ours, theirs], root, check=False)
+        if p.returncode != 0:
+            return MergePrediction(conflict=False, error=p.stderr.strip())
+        files = legacy_conflicts(p.stdout)
+        return MergePrediction(conflict=bool(files), files=tuple(files))

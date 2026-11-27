@@ -13,8 +13,13 @@ SIZE = (120, 35)
 
 async def settle(pilot, app, rounds=3):
     """Wait for the app's finite workers (not the endless event watcher)."""
+    from textual.worker import WorkerCancelled
+
     for _ in range(rounds):
-        await app.workers.wait_for_complete([w for w in app.workers if w.group not in ("watch",)])
+        try:
+            await app.workers.wait_for_complete([w for w in app.workers if w.group not in ("watch",)])
+        except WorkerCancelled:  # an exclusive worker (peek) was replaced by a newer one
+            pass
         await pilot.pause(0.05)
 
 
@@ -163,6 +168,88 @@ async def test_live_status_messages_and_needs_input_on_top(repo, ws, set_scenari
         assert "SendMessage → asker" in app.details_text()
     for n in ("asker", "sender"):
         ws.stop(n)
+
+
+# -- Phase 4: conflicts panel, filter, file map, claims, diff, merge menu --------------------
+async def test_overlap_shows_by_itself_then_filter_filemap_claim_and_diff(repo, ws, set_scenario):
+    set_scenario({"a": [{"edit": "src/ui/Toolbar.tsx", "text": "// a\n"}, {"commit": "a: toolbar"},
+                        {"say": "DONE: toolbar"}],
+                  "b": [{"sleep": 2.5}, {"edit": "src/ui/Toolbar.tsx", "text": "// b\n"},
+                        {"edit": "src/ui/theme.ts", "text": "// b\n"}, {"sleep": 60}]})
+    ws.new_agent("Export button", name="a")
+    ws.new_agent("Dark mode", name="b")
+    ran = []
+    app = CCDashApp(Workspace.open(repo.root), external_fn=ran.append)
+    async with app.run_test(size=SIZE) as pilot:
+        await settle(pilot, app)
+        await wait_auto(pilot, lambda: "overlap a × b" in app.conflicts_text(), timeout=8)
+        assert "src/ui/Toolbar.tsx" in app.conflicts_text()
+
+        await pilot.press("slash")
+        await pilot.pause()
+        assert app.screen.id == "filter"
+        await pilot.press(*"theme.ts", "enter")  # a file only b touched
+        await pilot.pause()
+        assert table_names(app) == ["b"] and app.dash.filter == "theme.ts"
+        await pilot.press("slash")
+        await pilot.pause()
+        await pilot.press("ctrl+u", "enter")
+        await pilot.pause()
+        assert set(table_names(app)) == {"a", "b"} and app.dash.filter == ""
+
+        await pilot.press("f")
+        await pilot.pause(0.2)
+        fm = app.filemap_text()
+        toolbar = next(line for line in fm.splitlines() if "Toolbar.tsx" in line)
+        assert "a × b" in toolbar, "a file two agents touched names both"
+        assert "theme.ts" in fm and "ui/" in fm
+        await pilot.press("f")
+        await pilot.pause()
+        assert not app.filemap.display and app.query_one("#details").display
+
+        app.select("b")
+        await pilot.press("o")
+        await pilot.pause()
+        assert app.screen.id == "claim"
+        await pilot.press(*"src/auth/**", "enter")
+        await settle(pilot, app)
+        assert app.dash.conflicts.user_claims("b") == ["src/auth/**"]
+        await until(pilot, app, lambda: "src/auth/**" in app.details_text())
+
+        app.select("a")
+        await until(pilot, app, lambda: "ready" in app.row_text("a"))
+        await pilot.press("d")
+        await until(pilot, app, lambda: bool(ran))
+        assert ran[0][0] == "git" and ran[0][-1] == "main...cc/a"
+    for n in ("a", "b"):
+        ws.stop(n, wait=False)
+
+
+async def test_merge_menu_merges_locally_tells_the_others_and_cleans_up(repo, ws, set_scenario):
+    set_scenario({"a": [{"edit": "src/ui/Toolbar.tsx", "text": "// a\n"}, {"commit": "a: toolbar"},
+                        {"say": "DONE: toolbar"}], "*": []})
+    ws.new_agent("Export button", name="a")
+    ws.new_agent("Dark mode", name="b")
+    app = CCDashApp(Workspace.open(repo.root))
+    async with app.run_test(size=SIZE) as pilot:
+        await settle(pilot, app)
+        await until(pilot, app, lambda: "ready" in app.row_text("a"))
+        app.select("a")
+        await pilot.press("m")
+        await until(pilot, app, lambda: app.screen.id == "merge")
+        menu = app.screen.query_one("#choices").render().plain
+        assert "rebase" in menu and "merge into main locally" in menu
+        before = repo.git("rev-parse", "main").stdout.strip()
+        await pilot.press("l")  # the keypress that merges
+        await until(pilot, app, lambda: app.screen.id == "cleanup", timeout=20)
+        assert repo.git("rev-parse", "main^1").stdout.strip() == before
+        assert "merged" in app.row_text("a")
+        await until(pilot, app, lambda: "landed on main" in "\n".join(ws.peek("b", 60)))
+        await pilot.press("y")
+        await until(pilot, app, lambda: "a" not in table_names(app), timeout=25)
+    assert not (repo.root / ".claude" / "worktrees" / "a").exists()
+    assert repo.git("branch", "--list", "cc/a").stdout.strip() == ""
+    ws.stop("b", wait=False)
 
 
 async def test_talk_broadcast_and_peek_keys(repo, ws):

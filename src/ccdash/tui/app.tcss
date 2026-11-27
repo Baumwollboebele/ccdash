@@ -183,10 +183,19 @@ ModalScreen {
     color: $ccdash-dim;
 }
 
-#network {
+#network, #filemap {
     display: none;
     height: 1fr;
     text-wrap: nowrap;
+}
+
+#filemap {
+    text-overflow: ellipsis;
+}
+
+#note {
+    margin-bottom: 1;
+    color: $ccdash-dim;
 }
 
 #comms-top {

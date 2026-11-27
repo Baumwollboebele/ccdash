@@ -5,6 +5,7 @@ fixed clock, RGB theme, no animation. Update with: pytest tests/test_snapshots.p
 
 import pytest
 
+from ccdash.conflicts import Row
 from ccdash.messaging import Message
 from ccdash.tui import theme
 from ccdash.tui.app import CCDashApp
@@ -59,6 +60,24 @@ def demo_messages():
     ]
 
 
+def demo_conflicts():
+    return [
+        Row("merge", ("login-redirect", "main"), "src/auth/session.ts (both changed)", "red",
+            files=("src/auth/session.ts",)),
+        Row("overlap", ("csv-export", "dark-mode"), "src/ui/Toolbar.tsx", "yellow", files=("src/ui/Toolbar.tsx",)),
+        Row("shared", ("api-pagination",), "src/api/**  (3 agents notified {when})", "blue", ident="src/api/**",
+            files=("src/api/orders.ts",), when=at(47)),
+    ]
+
+
+TOUCHED = {
+    "csv-export": {"src/reports/export.ts", "src/reports/csv/writer.ts", "src/ui/Toolbar.tsx"},
+    "dark-mode": {"src/ui/theme.ts", "src/ui/Toolbar.tsx", "src/ui/Toolbar.css"},
+    "login-redirect": {"src/auth/session.ts", "src/auth/guard.ts"},
+    "api-pagination": {"src/api/orders.ts", "src/api/paging.ts", "README.md"},
+}
+
+
 def demo_app(repo, **kw):
     app = CCDashApp(Workspace.open(repo.root), no_anim=True, **kw)
     d = app.dash
@@ -68,7 +87,9 @@ def demo_app(repo, **kw):
     d.views = {x.name: x for x in demo_views(repo.root)}
     d.messages.items = demo_messages()
     d.default_sha = "3f2a9c1"
-    app.red_pairs = lambda: {frozenset({"csv-export", "dark-mode"}), frozenset({"login-redirect", "main"})}
+    d.conflicts.rows = demo_conflicts()  # the tracker is never updated here: the refreshes above do nothing
+    d.conflicts._paths = {name: set(paths) for name, paths in TOUCHED.items()}
+    d.conflicts._announced = {"csv-export": ["src/reports/**", "src/ui/Toolbar.tsx"]}
     return app
 
 
@@ -136,6 +157,31 @@ def test_network_view(repo, snap_compare):
 def test_comms_view(repo, snap_compare):
     async def before(pilot):
         await pilot.press("c")
+        await pilot.pause(0.1)
+
+    assert snap_compare(demo_app(repo), terminal_size=(120, 35), run_before=before)
+
+
+def test_file_map_view(repo, snap_compare):
+    async def before(pilot):
+        await select_csv(pilot)
+        await pilot.press("f")
+        await pilot.pause(0.1)
+
+    assert snap_compare(demo_app(repo), terminal_size=(120, 35), run_before=before)
+
+
+def test_merge_menu(repo, snap_compare):
+    from ccdash.tui.modals import ChoiceModal
+
+    async def before(pilot):
+        pilot.app.select("api-pagination")
+        await pilot.pause(0.05)
+        choices = [("r", "rebase", "ask api-pagination to rebase on main"),
+                   ("l", "local", "merge into main locally, if `npm test` passes"),
+                   ("p", "pr", "push the branch and open a pull request")]
+        pilot.app.push_screen(ChoiceModal("Merge api-pagination", choices, modal_id="merge",
+                                          note="cc/api-pagination · +6 −0 main · ready"))
         await pilot.pause(0.1)
 
     assert snap_compare(demo_app(repo), terminal_size=(120, 35), run_before=before)
