@@ -23,7 +23,7 @@ If a git remote exists, push after each commit.
 | 2: hooks, live status, messages, talk/broadcast | `e98643a` | Done, plus a real-Claude check (`scripts/real_claude_check.py`, result in findings) |
 | 3: look and feel | `3338e55` | Done. Screenshots: `docs/screenshots/phase3*.svg` |
 | 4: conflicts and merge | `97d710e` | Done. Screenshots: `docs/screenshots/phase4*.svg` |
-| 5: extras | the commit after `97d710e` | Done, all off by default. Tested against fakes only (see below) |
+| 5: extras | `86a75d2` | Done, all off by default. Tested against fakes only (see below) |
 
 Pushed to the private repo https://github.com/Baumwollboebele/ccdash, branch `main`. Push after each commit with `git push`.
 
