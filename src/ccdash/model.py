@@ -38,6 +38,7 @@ class AgentRecord:
     started_at: float | None = None  # epoch of the current run's start
     setup: str = ""  # "" | running | ok | failed: <code>
     adopted: bool = False
+    role: str = ""  # "" for an agent in its own worktree; "lead" for the coordinator in the main checkout
     extra: dict = field(default_factory=dict, repr=False)  # unknown keys from newer versions, kept as-is
 
     @classmethod

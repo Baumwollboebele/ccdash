@@ -13,11 +13,13 @@ from typing import Callable
 
 from . import gitstate, gitutil, worktree
 from .config import Config, load_config
+from .lead import LEAD
 from .model import AgentRecord
 from .naming import is_valid_name, slugify, unique_name
-from .prompt import render_prompt
+from .prompt import render_lead_prompt, render_prompt
 from .repo import Repo, compare_ref, default_branch, discover, fetch_if_stale, resolve_base
-from .runner import Runner, agent_env, claude_args, claude_command, get_runner, is_trusted, session_exists
+from .runner import (Runner, agent_env, allow_patterns, claude_args, claude_command, get_runner, is_trusted,
+                     session_exists)
 from .state import Registry, State
 
 Progress = Callable[[str, float], None]
@@ -78,10 +80,11 @@ class AgentView:
     hooks_missing: bool = False  # alive, but no hook event this run (check the hooks setup)
     stale: bool = False  # working, but no event for 10 minutes
     last: str = ""
+    role: str = ""  # "lead" for the coordinator
 
     def to_json(self) -> dict:
         return {k: getattr(self, k) for k in (
-            "name", "task", "status", "lifecycle", "alive", "branch", "worktree", "base_ref", "created_at",
+            "name", "role", "task", "status", "lifecycle", "alive", "branch", "worktree", "base_ref", "created_at",
             "ahead", "behind", "files", "dirty", "merge_state", "last_subject", "setup")}
 
 
@@ -154,8 +157,16 @@ class Workspace:
             raise UnknownAgent(f"no agent named {name!r}")
         return rec
 
+    def _cwd(self, rec: AgentRecord) -> Path:
+        """Where an agent's session runs: its worktree, or the main checkout for the lead."""
+        return Path(rec.worktree) if rec.worktree else self.repo.main_root
+
+    def lead(self) -> AgentRecord | None:
+        rec = self.registry.get(LEAD)
+        return rec if rec is not None and rec.role == "lead" and rec.lifecycle != "deleted" else None
+
     def _taken(self, agents: dict[str, AgentRecord]) -> set[str]:
-        taken = set(agents)
+        taken = set(agents) | {LEAD}
         root = self.worktree_root
         if root.is_dir():
             taken |= {p.name for p in root.iterdir()}
@@ -166,8 +177,9 @@ class Workspace:
         return taken
 
     def _active_count(self, agents: dict[str, AgentRecord]) -> int:
-        return sum(1 for a in agents.values()
-                   if a.lifecycle == "starting" or (a.lifecycle == "running" and self.runner.is_alive(a)))
+        """Agents that count towards max_agents: the lead is not one of them."""
+        return sum(1 for a in agents.values() if a.role != "lead" and
+                   (a.lifecycle == "starting" or (a.lifecycle == "running" and self.runner.is_alive(a))))
 
     # -- start ----------------------------------------------------------------------
     def new_agent(self, task: str, name: str | None = None, base: str | None = None, model: str | None = None,
@@ -182,6 +194,8 @@ class Workspace:
                              f"and accept the trust dialog, then try again.")
         if name is not None and not is_valid_name(name):
             raise WorkspaceError(f"invalid name {name!r}: use lowercase letters, digits and '-', at most 30 chars")
+        if name == LEAD:
+            raise WorkspaceError(f"the name {LEAD!r} is reserved for the coordinator (key l, or `cc lead`)")
         with self.registry.edit() as agents:
             if self._active_count(agents) >= self.cfg.max_agents:
                 raise WorkspaceError(f"max_agents ({self.cfg.max_agents}) reached; stop an agent first")
@@ -220,12 +234,57 @@ class Workspace:
         progress("started", 1.0)
         return self.record(name)
 
-    def _first_prompt(self, rec: AgentRecord) -> str:
+    def _others(self, name: str) -> tuple[list[AgentRecord], bool]:
+        """The other agents with a branch of their own that run right now, and whether a lead runs."""
         agents = self.registry.load()
-        others = [a for a in agents.values()
-                  if a.name != rec.name and a.lifecycle in ("running", "starting") and a.branch]
+        running = [a for a in agents.values() if a.name != name and a.lifecycle in ("running", "starting")]
+        return [a for a in running if a.branch], any(a.role == "lead" for a in running)
+
+    def _first_prompt(self, rec: AgentRecord) -> str:
+        others, lead = self._others(rec.name)
         return render_prompt(rec, repo_name=self.repo.name, default_branch=self.default_branch, others=others,
-                             owned=self.claims(), shared=self.cfg.shared)
+                             owned=self.claims(), shared=self.cfg.shared, lead=lead)
+
+    # -- the lead -------------------------------------------------------------------
+    def start_lead(self, request: str | None = None, check_trust: bool = True) -> AgentRecord:
+        """Start the coordinator in the main checkout, or resume its conversation. `request` goes in
+        with it: as part of its first prompt, or as the prompt it resumes with. (lead.py)"""
+        from . import lead as lead_mod
+        from .messaging import USER_PREFIX
+
+        if check_trust and is_trusted(self.repo.main_root) is False:
+            raise NotTrusted(f"Claude Code has not been trusted in {self.repo.main_root} yet. Run `claude` there once "
+                             f"and accept the trust dialog, then try again.")
+        rec = self.lead()
+        if rec is not None and self.runner.is_alive(rec):
+            raise WorkspaceError("the lead is already running")
+        if rec is None:
+            with self.registry.edit() as agents:
+                old = agents.get(LEAD)
+                if old is not None and old.lifecycle != "deleted" and old.role != "lead":
+                    raise WorkspaceError(f"an agent named {LEAD!r} exists already; delete it (x) to make room for "
+                                         f"the coordinator")
+                rec = AgentRecord(name=LEAD, task=lead_mod.TASK, role="lead", lifecycle="starting",
+                                  runner=self.runner.kind, model=self.cfg.model,
+                                  permission_mode=self.cfg.permission_mode)
+                agents[LEAD] = rec
+        try:
+            if session_exists(self.repo.main_root, rec.claude_session_id):
+                rec = self.registry.update(LEAD, restarts=rec.restarts + 1, stop_requested=False)
+                self._start(rec, resume=rec.claude_session_id, prompt=f"{USER_PREFIX} {request}" if request else None)
+            else:
+                cmd, _path = lead_mod.command()
+                others, _ = self._others(LEAD)
+                self._start(rec, prompt=render_lead_prompt(
+                    repo_name=self.repo.name, default_branch=self.default_branch, cmd=cmd,
+                    prefix=self.cfg.branch_prefix, max_agents=self.cfg.max_agents, others=others, request=request,
+                    owned=self.claims()))
+        except Exception:
+            cur = self.registry.get(LEAD)
+            if cur is not None and cur.lifecycle == "starting":
+                self.registry.update(LEAD, lifecycle="stopped")
+            raise
+        return self.record(LEAD)
 
     def claims(self) -> dict[str, list[str]]:
         """Paths each agent claimed or touched (filled in by the ownership tracker)."""
@@ -245,11 +304,19 @@ class Workspace:
 
     def _start(self, rec: AgentRecord, prompt: str | None = None, resume: str | None = None) -> None:
         session_id = None if resume else str(uuid.uuid4())
+        cwd = self._cwd(rec)
+        allowed = path = None
+        if rec.role == "lead":  # it calls ccdash by name, and may start and message agents without asking
+            from . import lead as lead_mod
+
+            cmd, path = lead_mod.command()
+            allowed = allow_patterns(cmd, lead_mod.HARMLESS)
         args = claude_args(rec.name, session_id=session_id, resume=resume, model=rec.model,
-                           permission_mode=rec.permission_mode, prompt=prompt)
+                           permission_mode=rec.permission_mode, prompt=prompt, allowed_tools=allowed)
         started = time.time()
-        info = self.runner.start(rec, claude_command(self.cfg), args, agent_env(self.state, rec.name, rec.worktree),
-                                 Path(rec.worktree), settings=self.hook_settings(rec))
+        info = self.runner.start(rec, claude_command(self.cfg), args,
+                                 agent_env(self.state, rec.name, str(cwd), path_prepend=path), cwd,
+                                 settings=self.hook_settings(rec))
         self.registry.update(rec.name, lifecycle="running", stop_requested=False,  # a runner may know the id better
                              claude_session_id=info.get("session_id") or resume or session_id,
                              session=info.get("pipe") or info.get("session", ""),
@@ -271,6 +338,8 @@ class Workspace:
         rec = self.record(name)
         if self.runner.is_alive(rec):
             raise WorkspaceError(f"{name} is still running")
+        if rec.role == "lead":
+            return self.start_lead()
         if not Path(rec.worktree).is_dir():
             raise WorkspaceError(f"the worktree of {name} is gone: {rec.worktree}")
         self.registry.update(name, restarts=rec.restarts + 1, stop_requested=False)
@@ -373,7 +442,7 @@ class Workspace:
             alive = a.lifecycle != "deleted" and self.runner.is_alive(a)
             views.append(AgentView(
                 name=a.name, task=a.task, lifecycle=a.lifecycle, alive=alive, branch=a.branch, worktree=a.worktree,
-                base_ref=a.base_ref, base_sha=a.base_sha, created_at=a.created_at, setup=a.setup, record=a,
+                base_ref=a.base_ref, base_sha=a.base_sha, created_at=a.created_at, setup=a.setup, record=a, role=a.role,
                 status="deleted" if a.lifecycle == "deleted" else self.runtime_status(a, alive),
                 exit=self.runner.exit_info(a)))
         for wt in self.untracked_worktrees():

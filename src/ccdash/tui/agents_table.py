@@ -98,14 +98,17 @@ class AgentsTable(DataTable):
         task = (v.task.splitlines() or [""])[0]
         if len(task) > self.task_width:
             task = task[: self.task_width - 1] + "…"
+        lead = v.role == "lead"  # the coordinator: no branch, nothing to merge
+        if lead and not (pulse and v.status == "needs_input"):
+            name_style = f"bold {ACCENT}"
         return {
             "name": marker + Text(v.name, style=name_style),
             "status": status_cell(v, glyph=glyph, pulse=pulse, progress=progress),
-            "task": Text(task, style=DIM if v.status == "untracked" else (fade or "default")),
-            "branch": Text(v.branch, style=DIM),
+            "task": Text(task, style=DIM if (lead or v.status == "untracked") else (fade or "default")),
+            "branch": Text("main checkout" if lead else v.branch, style=DIM),
             "main": main_cell(v, flash=flash),
             "files": Text(str(v.files) if v.branch else "", style="default" if v.files else DIM),
-            "state": state_cell(v, fade=fade),
+            "state": Text("") if lead else state_cell(v, fade=fade),
         }
 
     def refresh_rows(self, views: list[AgentView], status_kw_for, columns=("name", "status", "main", "state")) -> None:

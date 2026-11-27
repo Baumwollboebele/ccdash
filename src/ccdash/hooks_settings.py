@@ -68,5 +68,5 @@ def for_agent(ws, rec):
     """'http' (the host renders the settings once it knows its port) or a settings dict."""
     if transport(ws) == "http":
         return "http"
-    ident = (rec.name, str(ws.state.root), str(rec.worktree or "")) if ws.runner.kind == "bg" else None
+    ident = (rec.name, str(ws.state.root), str(rec.worktree or ws.repo.main_root)) if ws.runner.kind == "bg" else None
     return render_command(guard=ws.cfg.guard != "off", ident=ident)

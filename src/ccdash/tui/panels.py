@@ -48,10 +48,35 @@ class DetailsPanel(Static):
              peek: list[str] | None = None, frame: int = 0, animate: bool = False, owns: list[str] | None = None,
              tests: str = "", conflict: tuple = (), pr=None) -> None:
         if v is None:
-            self.last_text = Text("No agent selected. Press n to start one.", style=DIM)
+            self.last_text = Text("No agents yet. Press l and say what you want built: the lead starts the agents.\n"
+                                  "Or press n to start one agent yourself.", style=DIM)
             self.update(self.last_text)
             return
         t = Text()
+        if v.role == "lead":
+            kv(t, "Role", "coordinator: it turns what you ask for into agents")
+            kv(t, "Works in", "the main checkout; it has no worktree or branch and edits nothing")
+            if activity is not None and activity.last:
+                last = shimmer(activity.last, frame) if animate and v.status == "working" else Text(activity.last)
+                last.append(f"  {_ago(activity.last_ts)}", style=DIM)
+                kv(t, "Last", last)
+            status = Text.assemble((STATUS_GLYPH.get(v.status, " ") + " ", STATUS_STYLE.get(v.status, "default")),
+                                   v.status.replace("_", " "))
+            kv(t, "Status", status)
+            if v.status == "needs_input":
+                t.append("Waiting for you: attach (a) to answer. What you tell it now is queued.\n", style="yellow")
+            elif not v.alive:
+                t.append("Not running. l starts it again with what you tell it; r resumes it as it was.\n", style=DIM)
+            else:
+                t.append("l tells it what you want · a attaches for a conversation · Ctrl+] comes back\n", style=DIM)
+            if peek is not None:
+                t.append("── live output ──\n", style=DIM)
+                height = max(3, (self.size.height or 20) - len(t.plain.splitlines()) - 1)
+                for line in (peek or ["(no output yet)"])[-height:]:
+                    t.append(line[:200] + "\n", style="default")
+            self.last_text = t
+            self.update(t)
+            return
         if v.status == "untracked":
             kv(t, "Worktree", repo_rel(v.worktree))
             kv(t, "Branch", v.branch or "(detached)")

@@ -154,6 +154,9 @@ def run_setup(cmd: str, cwd: Path, log_path: Path, on_line: Callable[[str], None
 
 def remove_worktree(repo: Repo, path: Path, branch: str, force: bool = False) -> None:
     path = Path(path)
+    resolved, main = path.resolve(), repo.main_root.resolve()
+    if resolved == main or resolved in main.parents:  # whatever a record says: never the checkout itself
+        raise WorktreeError(f"refusing to remove {path}: it is the main checkout, not an agent's worktree")
     if path.exists():
         args = ["worktree", "remove", *(["--force", "--force"] if force else []), str(path)]
         p = gitutil.git(args, repo.main_root, check=False)

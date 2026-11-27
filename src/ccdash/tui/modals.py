@@ -201,7 +201,8 @@ class ChoiceModal(ModalScreen[str | None]):
 
 
 HELP = [
-    ("n", "new agent"), ("s", "stop (keeps worktree and branch)"), ("r", "restart / resume"),
+    ("l", "tell the lead what you want; it starts the agents"),
+    ("n", "new agent, set up by hand"), ("s", "stop (keeps worktree and branch)"), ("r", "restart / resume"),
     ("a / enter", "attach (Ctrl+] or Ctrl-b d detaches)"), ("p", "peek: live output in the details panel"),
     ("t", "talk to the selected agent"), ("b", "broadcast to every running agent"),
     ("m", "merge menu: rebase, merge locally, open a PR"), ("d", "diff against the default branch"),

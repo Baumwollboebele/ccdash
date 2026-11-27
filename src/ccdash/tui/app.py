@@ -26,12 +26,14 @@ from .panels import ConflictsPanel, DetailsPanel, MessagesPanel
 from . import theme
 from .theme import ACCENT, DIM, THEMES, pick_theme, reduced_motion
 
-MAIN_ACTIONS = {"new", "stop", "restart", "attach", "peek", "talk", "broadcast", "merge", "diff", "delete", "filter",
-                "network", "filemap", "comms", "claim", "toggle_hidden", "adopt", "next_repo", "help", "quit_dash"}
+MAIN_ACTIONS = {"lead", "new", "stop", "restart", "attach", "peek", "talk", "broadcast", "merge", "diff", "delete",
+                "filter", "network", "filemap", "comms", "claim", "toggle_hidden", "adopt", "next_repo", "help",
+                "quit_dash"}
 VIEW_TITLES = {"network": "Network", "filemap": "File map"}
 
-FOOTER_KEYS = [("n", "new"), ("s", "stop"), ("r", "restart"), ("a", "attach"), ("p", "peek"), ("t", "talk"),
-               ("b", "broadcast"), ("m", "merge"), ("d", "diff"), ("x", "delete"), ("?", "help"), ("q", "quit")]
+FOOTER_KEYS = [("l", "lead"), ("n", "new"), ("s", "stop"), ("r", "restart"), ("a", "attach"), ("p", "peek"),
+               ("t", "talk"), ("b", "broadcast"), ("m", "merge"), ("d", "diff"), ("x", "delete"), ("?", "help"),
+               ("q", "quit")]
 
 
 class CCDashApp(App):
@@ -39,6 +41,7 @@ class CCDashApp(App):
     TITLE = "ccdash"
     ENABLE_COMMAND_PALETTE = False
     BINDINGS = [
+        Binding("l", "lead", "lead"),
         Binding("n", "new", "new"), Binding("s", "stop", "stop"), Binding("r", "restart", "restart"),
         Binding("a", "attach", "attach"), Binding("p", "peek", "peek"), Binding("t", "talk", "talk"),
         Binding("b", "broadcast", "broadcast"), Binding("m", "merge", "merge"), Binding("d", "diff", "diff"),
@@ -593,6 +596,24 @@ class CCDashApp(App):
         return v
 
     # -- actions --------------------------------------------------------------------------
+    def action_lead(self) -> None:
+        """Say what you want built; the lead turns it into agents (lead.py)."""
+        modal = TextInputModal("Tell the lead", modal_id="lead",
+                               placeholder="what do you want built? e.g. Add CSV export to the reports page",
+                               hint="The lead splits it into tasks and starts an agent for each; they appear in the "
+                                    "table. Leave it empty to just start the lead, then attach to it with a.")
+        self.push_screen(modal, self._tell_lead)
+
+    def _tell_lead(self, text: str | None) -> None:
+        if text is None:
+            return
+        from .. import lead
+
+        v = self.dash.get(lead.LEAD)
+        if v is None or not v.alive:
+            self.notify("Starting the lead…")
+        self._run(lambda: lead.tell(self.ws, text, self.dash))
+
     def action_new(self) -> None:
         taken = set(self.dash.views) | self.ws._taken(self.ws.registry.load())
         modal = NewAgentModal(taken, self.ws.default_branch, self.ws.cfg.model, self.ws.cfg.permission_mode)

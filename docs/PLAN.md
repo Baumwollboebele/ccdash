@@ -15,6 +15,7 @@ This document is written as a build spec for a Claude Code instance. Section "Ha
 **In scope**
 
 - A full-screen TUI (terminal UI) per repository, launched with `cc` from any folder inside the repo or one of its worktrees.
+- A lead: one coordinator session you tell what you want built; it starts the agents for you.
 - Spawning agents: each in its own git worktree and branch, running interactive `claude` inside a tmux session that ccdash owns.
 - Live status per agent from Claude Code hooks: working, needs input, idle, finished, stopped, crashed.
 - A message log of agent-to-agent `SendMessage` traffic, and a way for you to message one agent or all.
@@ -98,7 +99,8 @@ One screen, four panels: the agent table on top, details of the selected agent o
 
 | Key | Action | Notes |
 | --- | --- | --- |
-| `n` | New agent | Modal: task (required), name (prefilled slug), base `main`/`HEAD`, model, permission mode |
+| `l` | Tell the lead | One line saying what you want built; the lead starts the agents (see The lead) |
+| `n` | New agent | By hand. Modal: task (required), name (prefilled slug), base `main`/`HEAD`, model, permission mode |
 | `s` | Stop selected | Graceful, keeps worktree and branch |
 | `r` | Restart / resume | Resumes the last conversation in the same worktree |
 | `a` / `Enter` | Attach | TUI suspends, the agent takes the terminal; detach with Ctrl+\] on Windows, or in tmux with (`Ctrl-b d`) returns |
@@ -247,6 +249,20 @@ Agents avoid breaking each other in four layers. Each is a backstop for the one 
 | shared | Branch changes a configured shared-interface glob | yellow, blue once dependents were notified |
 | stale base | Branch is more than 20 commits behind the default branch | grey |
 
+## The lead
+
+Added after Phase 5, from the first real use: setting up every agent by hand is not how you want to work. The lead is one Claude Code session per repository that you talk to; it turns what you ask for into agents.
+
+- **Use.** Press `l` in the dashboard and type "work on feature xyz", or run `cc lead "work on feature xyz"`. The lead splits the request into tasks and starts an agent for each one; they appear in the table. `a` on the lead's row attaches for a normal conversation.
+- **What it is.** An agent record with role `lead`. It runs in the main checkout, has no worktree and no branch, and is told to edit nothing itself. Its row stays on top. It does not count towards `max_agents` or the header's agent count.
+- **How it delegates.** It runs `ccdash new "<task>" --name <name>`, the same command as `cc "<task>"`. Its prompt (`src/ccdash/lead.md`) explains how to write a brief, to give each agent different files, and what stays with you: merging, pull requests, stopping and deleting.
+- **Permissions.** The lead may run `ccdash new`, `ls`, `peek`, `send` and `broadcast` without a permission prompt (rules passed with `--allowedTools`, for the Bash and PowerShell tools). Everything else follows your normal permission mode.
+- **Reporting.** Agents started while a lead runs are told to send it one line when they are done or blocked.
+- **Stopped lead.** The next `l` resumes its conversation with the new request as the prompt. `r` resumes it as it was.
+- **Safety.** Deleting the lead only ends its session and hides the record. Independently of that, removing a worktree refuses the main checkout whatever a record says.
+
+Not yet checked against the real Claude Code: that the `--allowedTools` rules match the way Claude writes the command, and how well it follows the delegation prompt.
+
 ## Agent lifecycle
 
 ccdash creates the worktree itself and runs plain interactive `claude` inside it, in a terminal session ccdash names and owns (a ConPTY host on Windows, tmux elsewhere). This gives known paths, known branch names, and reliable stop and attach, without depending on Claude Code's research-preview background mode. A backend for `claude --bg` can be added later behind the same interface (Phase 5).
@@ -370,8 +386,9 @@ ccdash/
     activity.py       # per-agent activity from hook events
     comms.py          # conversations for the Comms view
     messaging.py      # deliver to agents (typed into the terminal), message log
-    prompt.py         # renders protocol.md with the live agent list and the task
+    prompt.py         # renders protocol.md and lead.md with the live agent list and the task or request
     protocol.md       # coordination prompt template
+    lead.py  lead.md  # the lead: the coordinator you talk to, and its prompt
     tui/
       app.py  app.tcss  theme.py  anim.py  canvas.py
       agents_table.py  panels.py  modals.py

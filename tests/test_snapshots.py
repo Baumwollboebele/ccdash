@@ -6,6 +6,7 @@ fixed clock, RGB theme, no animation. Update with: pytest tests/test_snapshots.p
 import pytest
 
 from ccdash.conflicts import Row
+from ccdash.lead import TASK as LEAD_TASK
 from ccdash.messaging import Message
 from ccdash.tui import theme
 from ccdash.tui.app import CCDashApp
@@ -37,6 +38,7 @@ def demo_views(root):
                          merge_state=state, **kw)
 
     return [
+        AgentView(name="lead", role="lead", status="idle", task=LEAD_TASK, lifecycle="running", alive=True),
         v("csv-export", "working", "Add CSV export to reports", 4, 0, 7, "dirty", dirty=2,
           dirty_paths=["src/reports/export.ts", "src/ui/Toolbar.tsx"], last_subject="add writer"),
         v("login-redirect", "needs_input", "Fix login redirect bug", 2, 3, 3, "conflict"),

@@ -405,7 +405,8 @@ class ConflictTracker:
                     if said:
                         note["announced"] = said
                     elif self.active and others and now >= note["first"] + wait:
-                        text = (f"{v.name} changed the shared interface {file_list(hit)} ({glob}) on {v.branch} without "
+                        where = f"on {v.branch}" if v.branch else "in the main checkout"
+                        text = (f"{v.name} changed the shared interface {file_list(hit)} ({glob}) {where} without "
                                 f"announcing it. If your work depends on it, look at the change and message {v.name}.")
                         try:
                             self._notify(dashboard, "all", text, exclude={v.name})

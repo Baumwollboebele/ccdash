@@ -1,7 +1,8 @@
 """`cc`: open the dashboard, or manage agents from the shell.
 
     cc                      open the dashboard for the repo you are in
-    cc "task"               start an agent for the task without opening the dashboard
+    cc lead "request"       tell the lead what you want built; it starts the agents
+    cc "task"               start one agent for the task yourself (also: cc new "task" --name x)
     cc ls [--json] [--all]  list agents
     cc stop|restart|attach|peek|rm|adopt <name>
     cc send <name> <text>   type a one-line message into an agent;  cc broadcast <text>
@@ -16,8 +17,8 @@ import argparse
 import json
 import sys
 
-SUBCOMMANDS = ("ls", "stop", "restart", "attach", "peek", "rm", "delete", "adopt", "send", "broadcast", "hook",
-               "version", "dash", "help")
+SUBCOMMANDS = ("ls", "new", "lead", "stop", "restart", "attach", "peek", "rm", "delete", "adopt", "send", "broadcast",
+               "hook", "version", "dash", "help")
 
 
 def _out(text: str = "") -> None:
@@ -45,6 +46,14 @@ def cmd_new(ns) -> int:
                        permission_mode=ns.permission_mode)
     _out(f"started {rec.name} · {rec.branch} · {ws.repo.rel(rec.worktree)}")
     _out(f"  attach with: cc attach {rec.name}")
+    return 0
+
+
+def cmd_lead(ns) -> int:
+    from . import lead
+
+    _out(lead.tell(_ws(), " ".join(ns.text)))
+    _out("  attach with: cc attach lead")
     return 0
 
 
@@ -161,6 +170,16 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="cc", description="Dashboard for parallel Claude Code agents.")
     p.add_argument("--no-anim", action="store_true", help="turn all animation into static state changes")
     sub = p.add_subparsers(dest="cmd")
+    s = sub.add_parser("lead", help="tell the lead what you want built; it starts the agents")
+    s.add_argument("text", nargs="*", help="the request; without one, the lead is just started")
+    s.set_defaults(func=cmd_lead)
+    s = sub.add_parser("new", help="start an agent for a task (the same as: cc \"<task>\")")
+    s.add_argument("task", nargs="+")
+    s.add_argument("--name")
+    s.add_argument("--base", help="branch to start from (default: the default branch; HEAD for the main checkout)")
+    s.add_argument("--model")
+    s.add_argument("--permission-mode")
+    s.set_defaults(func=cmd_new)
     s = sub.add_parser("ls", help="list agents")
     s.add_argument("--json", action="store_true")
     s.add_argument("--all", action="store_true", help="include deleted agents")

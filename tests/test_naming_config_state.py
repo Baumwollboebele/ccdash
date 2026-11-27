@@ -46,6 +46,25 @@ def test_is_valid_name():
         assert not is_valid_name(bad), bad
 
 
+def test_registry_load_waits_out_a_file_that_is_being_replaced(tmp_path, monkeypatch):
+    """Windows: for the instant a writer replaces agents.json, opening it fails with PermissionError."""
+    from pathlib import Path
+
+    state = State(tmp_path)
+    reg = Registry(state)
+    reg.put(AgentRecord(name="a", task="t"))
+    real, calls = Path.read_text, []
+
+    def flaky(self, *args, **kw):
+        if self == state.agents_path and len(calls) < 3:
+            calls.append(1)
+            raise PermissionError(13, "Permission denied")
+        return real(self, *args, **kw)
+
+    monkeypatch.setattr(Path, "read_text", flaky)
+    assert list(reg.load()) == ["a"] and len(calls) == 3
+
+
 # -- config -----------------------------------------------------------------
 def test_config_defaults(repo):
     cfg = load_config(repo.root)

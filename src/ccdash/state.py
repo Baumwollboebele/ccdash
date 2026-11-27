@@ -144,11 +144,26 @@ class Registry:
         self.state = state
         self._lock_path = state.root / "agents.lock"
 
+    def _read(self) -> str | None:
+        """agents.json as text; None if there is none. Readers take no lock, and on Windows the file
+        cannot be opened for the instant in which a writer replaces it: try again instead of failing."""
+        for attempt in range(40):
+            try:
+                return self.state.agents_path.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                return None
+            except PermissionError:
+                if attempt == 39:
+                    raise
+                time.sleep(0.005 * (attempt + 1))
+        return None
+
     def load(self) -> dict[str, AgentRecord]:
-        try:
-            data = json.loads(self.state.agents_path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
+        text = self._read()
+        if text is None:
             return {}
+        try:
+            data = json.loads(text)
         except ValueError as exc:
             raise RuntimeError(f"{self.state.agents_path} is not valid JSON: {exc}") from exc
         return {a["name"]: AgentRecord.from_dict(a) for a in data.get("agents", [])}

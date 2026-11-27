@@ -165,6 +165,16 @@ class Session:
                         f.write(step.get("text", "change\n"))
 
                 self.tool(kind, {"file_path": path, "content": step.get("text", "")}, act)
+            elif "run" in step:  # a shell command, the way Claude's Bash tool runs one
+                cmd = step["run"]
+
+                def act(cmd=cmd):
+                    p = subprocess.run(cmd, shell=True, cwd=CWD, capture_output=True, text=True, encoding="utf-8",
+                                       errors="replace")
+                    out("  " + " ".join((p.stdout + p.stderr).split())[:300])
+
+                out(f"> {cmd}")
+                self.tool("Bash", {"command": cmd}, act)
             elif "commit" in step:
                 msg = step["commit"]
 
@@ -250,6 +260,7 @@ def main():
     p.add_argument("--settings")
     p.add_argument("--model")
     p.add_argument("--permission-mode")
+    p.add_argument("--allowedTools", "--allowed-tools")
     p.add_argument("--session-id")
     p.add_argument("-r", "--resume")
     p.add_argument("-c", "--continue", dest="cont", action="store_true")

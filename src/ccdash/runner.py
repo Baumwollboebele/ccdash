@@ -60,9 +60,21 @@ def claude_command(cfg=None) -> list[str]:
     return ["claude"]
 
 
+def allow_patterns(command: str, subcommands) -> str:
+    """Permission rules, in the syntax of `--allowedTools`, that let a session run
+    `<command> <subcommand> ...` in its shell tools without a prompt each time."""
+    rules = []
+    for tool in ("Bash", "PowerShell"):
+        for sub in subcommands:
+            rules.append(f"{tool}({command} {sub}*)" if sub == "ls" else f"{tool}({command} {sub} *)")
+    return " ".join(rules)
+
+
 def claude_args(name: str, *, session_id: str | None = None, resume: str | None = None, model: str | None = None,
-                permission_mode: str | None = None, prompt: str | None = None) -> list[str]:
-    args = ["--name", name]
+                permission_mode: str | None = None, prompt: str | None = None,
+                allowed_tools: str | None = None) -> list[str]:
+    # --allowedTools takes a list: it goes first, so that the next flag ends it and it cannot swallow the prompt
+    args = (["--allowedTools", allowed_tools] if allowed_tools else []) + ["--name", name]
     if resume:
         args += ["--resume", resume]
     elif session_id:
@@ -76,8 +88,10 @@ def claude_args(name: str, *, session_id: str | None = None, resume: str | None 
     return args
 
 
-def agent_env(state: State, name: str, worktree: str | None = None) -> dict[str, str]:
+def agent_env(state: State, name: str, worktree: str | None = None, path_prepend: str | None = None) -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if k not in SCRUB_VARS}
+    if path_prepend:  # the lead calls ccdash by name
+        env["PATH"] = path_prepend + os.pathsep + env.get("PATH", "")
     if os.environ.get("CLAUDECODE"):
         # Claude Code exports NO_COLOR to its tool shells; an agent started from there
         # should still look like a normal session. A user's own NO_COLOR is kept.

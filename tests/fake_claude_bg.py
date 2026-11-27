@@ -98,6 +98,7 @@ def session_parser():
     p.add_argument("--settings")
     p.add_argument("--model")
     p.add_argument("--permission-mode")
+    p.add_argument("--allowedTools", "--allowed-tools")
     p.add_argument("--session-id")
     p.add_argument("-r", "--resume")
     p.add_argument("-c", "--continue", dest="cont", action="store_true")

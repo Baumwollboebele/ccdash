@@ -99,6 +99,7 @@ async def shoot(out: Path, size: tuple[int, int], view: str | None) -> None:
         os.environ["CCDASH_REDUCED_MOTION"] = "1"
         os.environ.setdefault("CCDASH_THEME", "dark-rgb")
         ws = Workspace.open(root)
+        ws.start_lead("Build the reporting features: CSV export, dark mode, paginated orders")
         for name, task in TASKS:
             ws.new_agent(task, name=name)
         # main moves on, so login-redirect conflicts with it

@@ -163,7 +163,8 @@ class Dashboard:
             views = [v for v in views if f in v.name.lower() or f in v.status.replace("_", " ") or
                      f in v.task.lower() or any(f in p.lower() for p in v.dirty_paths + v.changed_paths)
                      or any(f in p.lower() for p in self._touched(v.name))]
-        return sorted(views, key=lambda v: (STATUS_ORDER.get(v.status, 9), v.created_at or "~", v.name))
+        return sorted(views, key=lambda v: (v.role != "lead", STATUS_ORDER.get(v.status, 9), v.created_at or "~",
+                                            v.name))  # the lead stays on top: it is where you start
 
     def _touched(self, name: str) -> set[str]:
         a = self.activity.get(name)
@@ -176,7 +177,8 @@ class Dashboard:
     def counts(self) -> dict[str, int]:
         with self._lock:
             views = [v for v in self.views.values() if v.status not in ("untracked", "deleted")]
-        return {"agents": len(views),
-                "working": sum(v.status in ("working", "running", "starting", "setup") for v in views),
+        agents = [v for v in views if v.role != "lead"]  # the coordinator is not one of the agents it starts
+        return {"agents": len(agents),
+                "working": sum(v.status in ("working", "running", "starting", "setup") for v in agents),
                 "needs_input": sum(v.status == "needs_input" for v in views),
                 "conflicts": self.conflicts.count if self.conflicts is not None else 0}
