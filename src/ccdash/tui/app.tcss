@@ -205,6 +205,12 @@ ModalScreen {
 #comms-threads {
     height: 1fr;
     background: $ccdash-bg;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+
+#comms-graph {
+    text-wrap: nowrap;
 }
 
 #comms-threads > .option-list--option-highlighted {

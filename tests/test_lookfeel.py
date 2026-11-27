@@ -146,7 +146,90 @@ async def test_network_view_nodes_edges_and_flight(repo):
         assert not app.network.display
 
 
+NAMES = ["csv-export", "login-redirect", "dark-mode", "api-pagination", "flaky-test"]
+
+
+def test_place_labels_inside_canvas_and_apart():
+    from ccdash.tui.network import _hit, place_labels
+
+    names = NAMES + ["you", "ccdash"]
+    for cols, rows, height in ((56, 18, 2), (54, 12, 1), (100, 30, 2), (44, 10, 1)):
+        for n in range(1, len(names) + 1):
+            sizes = {x: (len(x) + 2, height) for x in names[:n]}
+            rects = place_labels(sizes, cols, rows, avoid=((cols // 2 - 3, rows // 2, 6, 1),))
+            assert list(rects) == names[:n]
+            for left, top, w, h in rects.values():
+                assert 0 <= left and left + w <= cols and 0 <= top and top + h <= rows, (cols, rows, n)
+            placed = list(rects.values()) + [(cols // 2 - 3, rows // 2, 6, 1)]
+            assert not any(_hit(a, b) for i, a in enumerate(placed) for b in placed[i + 1:]), (cols, rows, n)
+
+
+def used_rows(text):
+    rows = [i for i, line in enumerate(text.splitlines()) if line.strip()]
+    return rows[0], rows[-1], len(text.splitlines())
+
+
+async def test_network_view_fits_its_panel_with_every_agent(repo):
+    """The graph is laid out on the panel's real size (it has none while hidden): every
+    agent is on it, whole, and it uses the panel's height."""
+    views = [view(n, "working", ahead=i) for i, n in enumerate(NAMES)]
+    app = frozen_app(repo, views, no_anim=True)
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.press("g")
+        await ticks(pilot, 2)
+        net = app.network_text()
+        lines = net.splitlines()
+        assert (max(len(x) for x in lines), len(lines)) == (app.network.size.width, app.network.size.height)
+        for name in (*NAMES, "◆ main", "+4 −0"):
+            assert name in net, name
+        first, last, total = used_rows(net)
+        assert first <= 1 and last - first >= total * 0.75, "top to bottom, not just one half"
+        await pilot.resize_terminal(100, 30)
+        await ticks(pilot, 2)
+        lines = app.network_text().splitlines()
+        assert (max(len(x) for x in lines), len(lines)) == (app.network.size.width, app.network.size.height)
+        assert all(name in app.network_text() for name in NAMES)
+
+
+async def test_network_nodes_keep_their_place_when_status_changes(repo):
+    views = [view(n, "working") for n in NAMES]
+    app = frozen_app(repo, views, no_anim=True)
+
+    def where(name):
+        for row, line in enumerate(app.network_text().splitlines()):
+            if name in line:
+                return row, line.index(name)
+
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.press("g")
+        await ticks(pilot, 2)
+        before = {n: where(n) for n in NAMES}
+        app.dash.views["flaky-test"].status = "needs_input"  # sorts to the top of the table
+        app.render_all()
+        await ticks(pilot, 2)
+        assert {n: where(n) for n in NAMES} == before
+
+
 # -- comms view -------------------------------------------------------------------------
+async def test_comms_graph_labels_whole_and_panel_used(repo):
+    views = [view(n, "working") for n in NAMES]
+    msgs = [msg("csv-export", "dark-mode", "Files: src/ui/Toolbar.tsx", 120), msg("dark-mode", "csv-export", "ok", 100),
+            msg("api-pagination", "all", "Landed", 60, recipients=["csv-export", "dark-mode", "login-redirect"]),
+            msg("you", "login-redirect", "Use the AuthGuard", 30, kind="you")]
+    app = frozen_app(repo, views, messages=msgs, no_anim=True)
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.press("c")
+        await ticks(pilot, 2)
+        graph = app.comms.graph_text()
+        for name in (*NAMES, "you", "ccdash"):
+            assert f" {name} " in f" {graph} ".replace("\n", " \n "), f"{name} must not run into another label"
+        first, last, total = used_rows(graph)
+        assert total == app.comms.query_one("#comms-graph").size.height
+        assert last - first >= total * 0.6, "the graph uses its panel, not just the top"
+        width = app.comms.query_one("#comms-timeline").size.width
+        assert max(len(x) for x in app.comms.timeline_text().splitlines()) == width, "timeline spans its panel"
+
+
 def test_threading_rule_pairs_files_silence_and_states():
     msgs = [
         msg("csv-export", "dark-mode", "Files: src/ui/Toolbar.tsx\nI add ExportButton", 900),
@@ -172,6 +255,14 @@ def test_threading_rule_pairs_files_silence_and_states():
     ccdash = [t for t in threads if t.kind == "ccdash"]
     assert len(ccdash) == 1 and ccdash[0].state == "delivered"
     assert threads[0].last_t >= threads[-1].last_t, "newest first"
+
+
+def test_ack_that_names_another_file_stays_in_the_thread():
+    msgs = [msg("csv-export", "dark-mode", "Files: src/reports/** src/ui/Toolbar.tsx\nI add ExportButton", 600),
+            msg("dark-mode", "csv-export", "Ack. I only touch theme.ts and Toolbar styles.", 540)]
+    threads = comms.build_threads(msgs, now=NOW)
+    assert len(threads) == 1 and threads[0].state == "agreed"
+    assert "theme.ts" not in threads[0].topic, "the topic stays what the thread is about"
 
 
 async def test_comms_view_graph_list_timeline(repo):

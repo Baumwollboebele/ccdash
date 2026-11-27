@@ -84,8 +84,14 @@ class MessageLog:
             inc = line["incoming"]
             receiver, sender, text = line.get("agent"), inc.get("from"), inc.get("text", "")
             for m in reversed(self.items[-200:]):
-                if m.kind == "agent" and m.sender == sender and not m.delivered and \
-                        (m.to in (receiver, "all", "*") or receiver in m.recipients) and m.text.strip() == text.strip():
+                if m.kind != "agent" or m.sender != sender or m.text.strip() != text.strip():
+                    continue
+                if m.to in ("all", "*"):  # a broadcast arrives once per receiver: that is how we learn who got it
+                    if receiver and receiver not in m.recipients:
+                        m.recipients.append(receiver)
+                    m.delivered = True
+                    return True
+                if not m.delivered and (m.to == receiver or receiver in m.recipients):
                     m.delivered = True
                     return True
             # sent by a session ccdash does not track (or the send event was lost): still show it

@@ -1,7 +1,8 @@
 """Conversations for the Comms view: messages grouped into threads, each with a state.
 
 Threading rule (v1): a new thread starts when a pair has been silent for 5 minutes,
-or when a message names files and none of them overlap the thread's files.
+or when a message names files and none of them overlap the thread's files (unless it
+opens with an acknowledgement of the other side's last message: that is a reply).
 ccdash's own notices are always their own thread. A broadcast starts a thread that
 collects the recipients' replies to the broadcaster.
 
@@ -20,6 +21,7 @@ SILENCE = 300.0
 DISCUSSING = 120.0
 _FILE = re.compile(r"(?<![\w/])((?:[\w.-]+/)+[\w.*-]*|[\w-]+\.[A-Za-z][A-Za-z0-9]{0,5})(?![\w/])")
 _ACK = re.compile(r"\b(agreed|ok|okay|ack|acknowledged|lgtm|sounds good|got it|noted|will do)\b", re.I)
+_ACK_START = re.compile(r"\W*(agreed|ok|okay|ack|acknowledged|lgtm|sounds good|got it|noted|will do)\b", re.I)
 
 
 def files_in(text: str) -> set[str]:
@@ -127,13 +129,17 @@ def build_threads(messages, now: float | None = None) -> list[Thread]:
             continue
         pair = frozenset({m.sender, m.to})
         t = open_pair.get(pair)
-        new = t is None or m.t - t.last_t > SILENCE or (mfiles and t.files and not _overlap(mfiles, t.files))
+        # "Ack. I only touch theme.ts" answers the thread, although it names another file
+        reply = t is not None and t.messages[-1].sender != m.sender and bool(_ACK_START.match(m.text or ""))
+        new = t is None or m.t - t.last_t > SILENCE or \
+            (mfiles and t.files and not reply and not _overlap(mfiles, t.files))
         if new:
             t = Thread("pair", pair, m.sender, m.to, [], set())
             threads.append(t)
             open_pair[pair] = t
         t.messages.append(m)
-        t.files |= mfiles
+        if not reply:
+            t.files |= mfiles
     for t in threads:
         t.state = _state(t, now)
     threads.sort(key=lambda t: t.last_t, reverse=True)

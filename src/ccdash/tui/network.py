@@ -22,6 +22,8 @@ WINDOW = 900.0  # last 15 minutes
 FLIGHT = 1.2  # seconds a message takes to fly along its edge
 THREAD_STYLE = {"discussing": ACCENT, "agreed": "green", "acked": "blue", "open": "yellow", "delivered": DIM}
 
+Rect = tuple[int, int, int, int]  # left, top, width, height, in character cells
+
 
 @dataclass
 class Flight:
@@ -37,24 +39,69 @@ def _edge_width(count: int) -> int:
     return 0 if count <= 0 else 1 if count <= 2 else 2 if count <= 5 else 3
 
 
-def ellipse_layout(names: list[str], cols: int, rows: int, center: bool = True) -> dict[str, tuple[float, float]]:
-    """Node centres in dot coordinates: around the middle, or on a full ellipse."""
-    w, h = cols * 2, rows * 4
-    cx, cy = w / 2, h / 2
-    rx, ry = w * 0.36, h * 0.34
-    pos = {}
-    n = max(1, len(names))
-    for i, name in enumerate(names):
-        a = -math.pi / 2 + 2 * math.pi * i / n
-        pos[name] = (cx + rx * math.cos(a), cy + ry * math.sin(a))
-    return pos
+# -- layout -------------------------------------------------------------------------
+def _hit(a: Rect, b: Rect) -> bool:
+    """Do two labels overlap? One blank column must stay between neighbours on a row."""
+    return a[0] < b[0] + b[2] + 1 and b[0] < a[0] + a[2] + 1 and a[1] < b[1] + b[3] and b[1] < a[1] + a[3]
 
 
-def _label(canvas: BrailleCanvas, x: float, y: float, text: Text) -> None:
-    col = int(x // 2) - len(text.plain) // 2
-    row = int(y // 4)
-    for i, (ch, style) in enumerate(_chars(text)):
-        canvas.text(col + i, row, ch, style)
+_NUDGES = sorted(((dx, dy) for dy in range(-3, 4) for dx in range(-18, 19, 2)),
+                 key=lambda d: (abs(d[1]) * 5 + abs(d[0]), d))
+
+
+def _free_spot(rect: Rect, placed: list[Rect], cols: int, rows: int) -> Rect:
+    left, top, w, h = rect
+    for dx, dy in _NUDGES:  # nearest first; a row costs as much as five columns
+        cand = (left + dx, top + dy, w, h)
+        if cand[0] < 0 or cand[1] < 0 or cand[0] + w > cols or cand[1] + h > rows:
+            continue
+        if not any(_hit(cand, r) for r in placed):
+            return cand
+    return rect  # no room at all (a tiny panel): overlap rather than vanish
+
+
+def place_labels(sizes: dict[str, tuple[int, int]], cols: int, rows: int,
+                 avoid: tuple[Rect, ...] = ()) -> dict[str, Rect]:
+    """Where each node's label goes: on an ellipse sized so that every label fits inside
+    the canvas, then moved to the nearest free spot so that no two labels overlap.
+
+    `sizes` maps a node to its label's (width, height) in cells; `avoid` are cells that
+    are already taken (the hub in the middle). The order of `sizes` is the order around
+    the ellipse, so callers pass a stable order and nodes never jump."""
+    if not sizes:
+        return {}
+    n = len(sizes)
+    max_w = max(w for w, _ in sizes.values())
+    max_h = max(h for _, h in sizes.values())
+    cx, cy = cols / 2, (rows - max_h) / 2
+    rx, ry = max(0.0, (cols - max_w) / 2 - 1), max(0.0, (rows - max_h) / 2)
+    start = {2: math.pi, 4: -3 * math.pi / 4}.get(n, -math.pi / 2)  # two: left and right; four: the corners
+    placed = list(avoid)
+    out: dict[str, Rect] = {}
+    for i, (name, (w, h)) in enumerate(sizes.items()):
+        a = start + 2 * math.pi * i / n
+        left = round(cx + rx * math.cos(a) - w / 2)
+        top = round(cy + ry * math.sin(a))
+        left = max(0, min(left, cols - w))
+        top = max(0, min(top, rows - h))
+        rect = _free_spot((left, top, w, h), placed, cols, rows)
+        placed.append(rect)
+        out[name] = rect
+    return out
+
+
+def _size(lines: list[Text]) -> tuple[int, int]:
+    return max(len(t.plain) for t in lines), len(lines)
+
+
+def _centred(lines: list[Text], cols: int, rows: int) -> Rect:
+    w, h = _size(lines)
+    return (max(0, (cols - w) // 2), max(0, (rows - h) // 2), w, h)
+
+
+def _anchor(rect: Rect, lines: list[Text]) -> tuple[float, float]:
+    """Where edges meet a label, in dot coordinates: the middle of its first line."""
+    return (rect[0] * 2 + len(lines[0].plain), rect[1] * 4 + 2)
 
 
 def _chars(text: Text):
@@ -66,24 +113,69 @@ def _chars(text: Text):
     return [(ch, styles[i] or base) for i, ch in enumerate(text.plain)]
 
 
+def _put(canvas: BrailleCanvas, rect: Rect, lines: list[Text]) -> None:
+    """Draw a label over the edges, with a blank cell on each side so lines do not touch the text."""
+    left, top = rect[0], rect[1]
+    for r, text in enumerate(lines):
+        canvas.text(left - 1, top + r, " ")
+        for i, (ch, style) in enumerate(_chars(text)):
+            canvas.text(left + i, top + r, ch, style)
+        canvas.text(left + len(text.plain), top + r, " ")
+
+
+def _dot(canvas: BrailleCanvas, a: tuple[float, float], b: tuple[float, float], p: float, glyph: str,
+         style: str) -> None:
+    canvas.text(int(lerp(a[0], b[0], p) // 2), int(lerp(a[1], b[1], p) // 4), glyph, style)
+
+
 def branch_bar(ahead: int, behind: int) -> Text:
     blocks = min(6, ahead)
     t = Text()
     t.append(f"+{ahead} ", style=ACCENT if ahead else DIM)
-    t.append(f"−{behind} ", style="yellow" if behind > 20 else DIM)
-    t.append("▮" * blocks, style=ACCENT)
+    t.append(f"−{behind}", style="yellow" if behind > 20 else DIM)
+    if blocks:
+        t.append(" " + "▮" * blocks, style=ACCENT)
     return t
 
 
-class NetworkView(Static):
-    """Agents around `main`; edges are messages (thickness = count in the last 15 min),
-    red edges are overlaps or predicted conflicts, each node has a tiny branch bar."""
+class Surface(Static):
+    """A Static whose drawing depends on its real size: it is painted again whenever it is
+    laid out or resized (a view that was hidden has no size until then)."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.painter = None  # (cols, rows) -> None
+        self.estimate = None  # () -> (cols, rows), used before the first layout
+        self._painted: tuple[int, int] | None = None
+
+    def repaint(self) -> None:
+        if self.painter is None:
+            return
+        w, h = self.size.width, self.size.height
+        if w < 8:
+            if self.estimate is None:
+                return  # on_resize paints once the size is known
+            w, h = self.estimate()
+        else:
+            self._painted = (w, h)
+        self.painter(w, h)
+
+    def on_resize(self, event) -> None:
+        if (self.size.width, self.size.height) != self._painted:
+            self.repaint()
+
+
+class NetworkView(Surface):
+    """Agents around the default branch; edges are messages (thickness = count in the last
+    15 min), red edges are overlaps or predicted conflicts, each node has a tiny branch bar."""
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.flights: list[Flight] = []
         self._edges: dict[frozenset, tuple[str, int]] = {}
+        self._scene = None
         self.last_text = Text()
+        self.painter = self._paint
 
     def edge_style(self, a: str, b: str) -> str | None:
         e = self._edges.get(frozenset({a, b}))
@@ -96,61 +188,71 @@ class NetworkView(Static):
     def add_flight(self, sender: str, to: str) -> None:
         self.flights.append(Flight(sender, to, time.monotonic()))
 
-    def show(self, views, messages, red_pairs: set, *, animate: bool, merged_progress=None) -> None:
-        now_m, now = time.monotonic(), time.time()
-        self.flights = [f for f in self.flights if f.progress(now_m) < 1.0]
-        cols, rows = max(30, self.size.width or 60), max(8, self.size.height or 20)
-        canvas = BrailleCanvas(cols, rows)
-        agents = [v for v in views if v.status not in ("untracked", "deleted")]
-        names = [v.name for v in agents]
-        pos = ellipse_layout(names, cols, rows)
-        main = (cols, rows * 2)
-        for v in agents:
-            p = merged_progress(v.name) if merged_progress else None
-            if p is not None:  # a merged branch flows into main
-                x, y = pos[v.name]
-                pos[v.name] = (lerp(x, main[0], p), lerp(y, main[1], p))
+    def show(self, views, messages, red_pairs: set, *, animate: bool, merged_progress=None,
+             default_branch: str = "main") -> None:
+        now = time.time()
+        agents = sorted((v for v in views if v.status not in ("untracked", "deleted")),
+                        key=lambda v: (v.created_at or "~", v.name))  # a stable order: nodes never jump
+        names = {v.name for v in agents}
         counts: dict[frozenset, int] = {}
         recent: set[frozenset] = set()
         for m in messages:
             if now - m.t > WINDOW:
                 continue
-            targets = m.recipients if m.to in ("all", "*") else [m.to]
-            for to in targets:
-                if m.sender in pos and to in pos and to != m.sender:
+            for to in (m.recipients if m.to in ("all", "*") else [m.to]):
+                if m.sender in names and to in names and to != m.sender:
                     key = frozenset({m.sender, to})
                     counts[key] = counts.get(key, 0) + 1
                     if now - m.t < 120:
                         recent.add(key)
-        self._edges = {}
-        for v in agents:  # every branch hangs off main
-            x, y = pos[v.name]
-            style = "blue" if v.merge_state == "merged" else DIM
-            canvas.line(x, y, *main, style=style, dotted=True, rank=0)
+        edges: dict[frozenset, tuple[str, int]] = {}
         for key, n in counts.items():
-            a, b = sorted(key)
-            style = "red" if key in red_pairs else (ACCENT if key in recent else "default")
-            width = _edge_width(n)
-            self._edges[key] = (style, width)
-            canvas.line(*pos[a], *pos[b], style=style, width=width, rank=2 if style == "red" else 1)
+            edges[key] = ("red" if key in red_pairs else (ACCENT if key in recent else "default"), _edge_width(n))
         for key in red_pairs:
-            if key in counts or len(key) != 2 or not all(k in pos for k in key):
-                continue
-            a, b = sorted(key)
-            self._edges[key] = ("red", 1)
-            canvas.line(*pos[a], *pos[b], style="red", width=1, rank=2)
+            if key not in edges and len(key) == 2 and all(k in names or k == default_branch for k in key):
+                edges[key] = ("red", 1)
+        self._edges = edges
+        self._scene = (agents, animate, merged_progress, default_branch)
+        self.repaint()
+
+    def _paint(self, cols: int, rows: int) -> None:
+        if self._scene is None or rows < 3:
+            return
+        agents, animate, merged_progress, default = self._scene
+        now_m = time.monotonic()
+        self.flights = [f for f in self.flights if f.progress(now_m) < 1.0]
+        canvas = BrailleCanvas(cols, rows)
+        labels: dict[str, list[Text]] = {}
+        for v in agents:
+            glyph = spinner_glyph() if animate and v.status == "working" else STATUS_GLYPH.get(v.status, " ")
+            labels[v.name] = [Text.assemble((glyph + " ", STATUS_STYLE.get(v.status, "default")), (v.name, "bold")),
+                              branch_bar(v.ahead, v.behind)]
+        hub = [Text(f"◆ {default}", style=f"bold {ACCENT}")]
+        hub_rect = _centred(hub, cols, rows)
+        rects = place_labels({n: _size(lines) for n, lines in labels.items()}, cols, rows, avoid=(hub_rect,))
+        for v in agents:
+            p = merged_progress(v.name) if merged_progress else None
+            if p is not None:  # a merged branch flows into the default branch
+                left, top, w, h = rects[v.name]
+                rects[v.name] = (round(lerp(left, hub_rect[0], p)), round(lerp(top, hub_rect[1], p)), w, h)
+        main = _anchor(hub_rect, hub)
+        pos = {n: _anchor(rects[n], labels[n]) for n in labels}
+        for v in agents:  # every branch hangs off the default branch
+            if frozenset({v.name, default}) in self._edges:
+                canvas.line(*pos[v.name], *main, style="red", rank=2)
+            else:
+                canvas.line(*pos[v.name], *main, style="blue" if v.merge_state == "merged" else DIM, dotted=True,
+                            rank=0)
+        for key, (style, width) in self._edges.items():
+            if all(k in pos for k in key):
+                a, b = sorted(key)
+                canvas.line(*pos[a], *pos[b], style=style, width=max(1, width), rank=2 if style == "red" else 1)
         for f in self.flights:
             if f.sender in pos and f.to in pos:
-                p = f.progress(now_m)
-                (x0, y0), (x1, y1) = pos[f.sender], pos[f.to]
-                canvas.text(int(lerp(x0, x1, p) // 2), int(lerp(y0, y1, p) // 4), "●", f"bold {ACCENT}")
-        _label(canvas, *main, Text("◆ main", style=f"bold {ACCENT}"))
-        for v in agents:
-            x, y = pos[v.name]
-            glyph = spinner_glyph() if animate and v.status == "working" else STATUS_GLYPH.get(v.status, " ")
-            style = STATUS_STYLE.get(v.status, "default")
-            _label(canvas, x, y, Text.assemble((glyph + " ", style), (v.name, "bold")))
-            _label(canvas, x, y + 4, branch_bar(v.ahead, v.behind))
+                _dot(canvas, pos[f.sender], pos[f.to], f.progress(now_m), "●", f"bold {ACCENT}")
+        _put(canvas, hub_rect, hub)
+        for name, lines in labels.items():
+            _put(canvas, rects[name], lines)
         self.last_text = canvas.render()
         self.update(self.last_text)
 
@@ -158,23 +260,32 @@ class NetworkView(Static):
 class CommsView(Vertical):
     """Full-screen agent-to-agent communication: graph, conversations, transcript, timeline."""
 
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.threads: list = []
+        self._scene = None
+        self._thread_sig = None
+        self._timeline_text = Text()
+        self._graph_text = Text()
+        self._list_text = ""
+
     def compose(self) -> ComposeResult:
         with Horizontal(id="comms-top"):
-            yield Static(id="comms-graph", classes="panel")
+            yield Surface(id="comms-graph", classes="panel")
             with Vertical(id="comms-right"):
                 yield OptionList(id="comms-threads", classes="panel")
                 yield Static(id="comms-transcript", classes="panel")
-        yield Static(id="comms-timeline", classes="panel")
+        yield Surface(id="comms-timeline", classes="panel")
 
     def on_mount(self) -> None:
-        self.query_one("#comms-graph").border_title = "Graph"
+        graph, timeline = self.query_one("#comms-graph", Surface), self.query_one("#comms-timeline", Surface)
+        graph.border_title = "Graph"
+        graph.painter = self._paint_graph
+        timeline.border_title = "Timeline · last 15 min"
+        timeline.painter = self._paint_timeline
+        timeline.estimate = lambda: (max(40, self.app.size.width - 4), 0)  # its height follows its content
         self.query_one("#comms-threads").border_title = "Conversations"
         self.query_one("#comms-transcript").border_title = "Transcript"
-        self.query_one("#comms-timeline").border_title = "Timeline · last 15 min"
-        self.threads: list = []
-        self._thread_sig = None
-        self._timeline_text = Text()
-        self._list_text = ""
 
     @property
     def selected(self):
@@ -186,25 +297,42 @@ class CommsView(Vertical):
     def show(self, views, messages, *, animate: bool, flights: list) -> None:
         now = time.time()
         self.threads = comms.build_threads(messages, now=now)
+        self._scene = (list(views), list(messages), animate, flights, now)
         self._render_list(animate)
-        sel = self.selected
-        self._render_graph(views, messages, sel, animate, flights, now)
-        self._render_transcript(sel)
-        self._render_timeline(views, messages, sel, now, animate)
+        self._repaint()
+
+    def _repaint(self) -> None:
+        if self._scene is None:
+            return
+        self._render_transcript(self.selected)
+        self.query_one("#comms-graph", Surface).repaint()
+        self.query_one("#comms-timeline", Surface).repaint()
+
+    def on_option_list_option_highlighted(self, event) -> None:
+        """Selecting a conversation highlights its edge and its arrows, and shows its transcript."""
+        self._repaint()
+
+    def on_resize(self, event) -> None:
+        if self._scene is not None:
+            self._render_list(self._scene[2])
 
     def _render_list(self, animate: bool) -> None:
         ol = self.query_one("#comms-threads", OptionList)
+        width = (ol.size.width or max(30, self.app.size.width // 2 - 4)) - 3  # option padding, scrollbar
         lines = []
         for t in self.threads:
             state = t.state
             glyph = spinner_glyph() if (animate and state == "discussing") else {
                 "agreed": "✓", "acked": "✓✓", "open": "○", "delivered": "→", "discussing": "●"}.get(state, " ")
-            row = Text()
+            clock = theme.fmt_clock(t.last_t)
+            room = width - 14 - len(t.pair_label) - 2 - len(clock) - 2  # one line per conversation
+            topic = t.topic if len(t.topic) <= room else (t.topic[:room - 1] + "…" if room > 1 else "")
+            row = Text(no_wrap=True, overflow="ellipsis")
             row.append(f"{glyph:<2} ", style=THREAD_STYLE.get(state, "default"))
             row.append(f"{state:<10} ", style=THREAD_STYLE.get(state, "default"))
             row.append(t.pair_label, style="bold")
-            row.append(f"  {t.topic}", style=DIM)
-            row.append("  " + theme.fmt_clock(t.last_t), style=DIM)
+            row.append(f"  {topic}", style=DIM)
+            row.append("  " + clock, style=DIM)
             lines.append(row)
         sig = tuple(r.plain for r in lines)
         if sig != self._thread_sig:
@@ -217,19 +345,21 @@ class CommsView(Vertical):
                 ol.highlighted = min(keep or 0, len(lines) - 1)
         self._list_text = "\n".join(sig)
 
-    def _render_graph(self, views, messages, sel, animate, flights, now) -> None:
-        g = self.query_one("#comms-graph", Static)
-        cols, rows = max(30, g.size.width - 4 or 50), max(6, g.size.height - 2 or 14)
+    def _paint_graph(self, cols: int, rows: int) -> None:
+        if self._scene is None or rows < 3:
+            return
+        views, messages, animate, flights, _now = self._scene
+        sel = self.selected
         canvas = BrailleCanvas(cols, rows)
-        names = [v.name for v in views if v.status not in ("untracked", "deleted")]
+        names = sorted(v.name for v in views if v.status not in ("untracked", "deleted"))
         for m in messages:
             for n in [m.sender, *(m.recipients if m.to in ("all", "*") else [m.to])]:
-                if n not in names and n not in ("all", "*"):
+                if n not in names and n not in ("all", "*", "you", "ccdash"):
                     names.append(n)
-        for extra in ("you", "ccdash"):
-            if extra not in names:
-                names.append(extra)
-        pos = ellipse_layout(names, cols, rows)
+        names += ["you", "ccdash"]
+        labels = {n: [Text(n, style=ACCENT if n == "you" else (DIM if n == "ccdash" else "bold"))] for n in names}
+        rects = place_labels({n: _size(lines) for n, lines in labels.items()}, cols, rows)
+        pos = {n: _anchor(rects[n], labels[n]) for n in names}
         state_of: dict[frozenset, str] = {}
         counts: dict[frozenset, int] = {}
         for t in reversed(self.threads):  # oldest first, newest state wins
@@ -250,18 +380,14 @@ class CommsView(Vertical):
             style = f"bold {ACCENT}" if key in sel_keys else THREAD_STYLE.get(state_of.get(key, "open"), DIM)
             canvas.line(*pos[a], *pos[b], style=style, width=_edge_width(n), rank=2 if key in sel_keys else 1)
             if animate and state_of.get(key) == "discussing":  # dots travel while a conversation is active
-                p = (time.monotonic() / 1.5) % 1.0
-                (x0, y0), (x1, y1) = pos[a], pos[b]
-                canvas.text(int(lerp(x0, x1, p) // 2), int(lerp(y0, y1, p) // 4), "•", ACCENT)
+                _dot(canvas, pos[a], pos[b], (time.monotonic() / 1.5) % 1.0, "•", ACCENT)
         for f in flights:
             if f.sender in pos and f.to in pos:
-                p = f.progress(time.monotonic())
-                (x0, y0), (x1, y1) = pos[f.sender], pos[f.to]
-                canvas.text(int(lerp(x0, x1, p) // 2), int(lerp(y0, y1, p) // 4), "●", f"bold {ACCENT}")
+                _dot(canvas, pos[f.sender], pos[f.to], f.progress(time.monotonic()), "●", f"bold {ACCENT}")
         for n in names:
-            style = ACCENT if n == "you" else (DIM if n == "ccdash" else "bold")
-            _label(canvas, *pos[n], Text(n, style=style))
-        g.update(canvas.render())
+            _put(canvas, rects[n], labels[n])
+        self._graph_text = canvas.render()
+        self.query_one("#comms-graph", Surface).update(self._graph_text)
 
     def _render_transcript(self, sel) -> None:
         tr = self.query_one("#comms-transcript", Static)
@@ -278,8 +404,11 @@ class CommsView(Vertical):
                 t.append(f"  {line}\n")
         tr.update(t)
 
-    def _render_timeline(self, views, messages, sel, now, animate) -> None:
-        tl = self.query_one("#comms-timeline", Static)
+    def _paint_timeline(self, cols: int, rows: int) -> None:
+        if self._scene is None:
+            return
+        views, messages, animate, _flights, now = self._scene
+        sel = self.selected
         lanes = [v.name for v in views if v.status not in ("untracked", "deleted")]
         recent = [m for m in messages if now - m.t <= WINDOW]
         for m in recent:
@@ -287,7 +416,7 @@ class CommsView(Vertical):
                 if n not in lanes and n not in ("all", "*"):
                     lanes.append(n)
         label_w = max([len(x) for x in lanes] + [6]) + 1
-        width = max(20, (tl.size.width or 110) - 4 - label_w - 4)
+        width = max(20, cols - label_w - 3)
         grid = [[" "] * width for _ in lanes]
         styles = [[DIM] * width for _ in lanes]
         sel_ids = {id(m) for m in sel.messages} if sel is not None else set()
@@ -322,10 +451,13 @@ class CommsView(Vertical):
             out.append("\n")
         out.append(" " * (label_w + 1) + "−15 min".ljust(width - 3) + "now", style=DIM)
         self._timeline_text = out
-        tl.update(out)
+        self.query_one("#comms-timeline", Surface).update(out)
 
     def timeline_text(self) -> str:
         return self._timeline_text.plain
+
+    def graph_text(self) -> str:
+        return self._graph_text.plain
 
     def list_text(self) -> str:
         return self._list_text

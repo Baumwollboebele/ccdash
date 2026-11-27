@@ -336,7 +336,8 @@ class CCDashApp(App):
     def _render_views(self, views) -> None:
         if self.view_mode == "network":
             self.network.show(views, self.dash.messages.items, self.red_pairs(), animate=self.animate,
-                              merged_progress=lambda n: self.motion.progress(("merged", n)))
+                              merged_progress=lambda n: self.motion.progress(("merged", n)),
+                              default_branch=self.ws.default_branch)
         if self.has_class("view-comms"):
             self.comms.show(views, self.dash.messages.items, animate=self.animate, flights=self.network.flights)
 
