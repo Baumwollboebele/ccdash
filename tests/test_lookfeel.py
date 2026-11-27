@@ -191,6 +191,38 @@ async def test_network_view_fits_its_panel_with_every_agent(repo):
         assert all(name in app.network_text() for name in NAMES)
 
 
+async def test_arrow_keys_and_clicks_select_agents(repo):
+    """The table's own cursor is hidden (the marker is ours), and Textual then scrolls on the arrow
+    keys instead of moving: the table has to move the selection itself."""
+    app = frozen_app(repo, [view("a", "idle"), view("b", "idle"), view("c", "idle")], no_anim=True)
+
+    async def press(*keys):
+        await pilot.press(*keys)
+        await pilot.pause()
+        return app.selected_name()
+
+    async with app.run_test(size=SIZE) as pilot:
+        await ticks(pilot, 2)
+        assert app.selected_name() == "a"
+        assert await press("down") == "b"
+        assert "▶" in app.row_text("b") and "▶" not in app.row_text("a")
+        assert app.query_one("#details-panel").border_title == "b", "the details follow the selection"
+        assert await press("down", "down", "down") == "c", "stops at the last agent"
+        assert await press("up") == "b"
+        assert await press("home") == "a" and await press("up") == "a"
+        assert await press("end") == "c"
+        assert await press("k") == "b" and await press("j") == "c"
+        assert await press("tab") == "a", "tab walks through the agents and wraps around"
+        assert await press("tab") == "b" and await press("shift+tab") == "a" and await press("shift+tab") == "c"
+        assert app.focused is app.table, "the keys stay with the agents table"
+        await pilot.click("#agents", offset=(6, 1))  # row 0 is the header
+        await pilot.pause()
+        assert app.selected_name() == "a", "a click selects too"
+        await pilot.click("#agents", offset=(6, 2))
+        await pilot.pause()
+        assert app.selected_name() == "b"
+
+
 async def test_the_lead_is_a_node_without_a_branch(repo):
     lead = AgentView(name="lead", role="lead", status="idle", lifecycle="running", alive=True)
     app = frozen_app(repo, [lead, view("csv-export", "working", ahead=2)], no_anim=True,

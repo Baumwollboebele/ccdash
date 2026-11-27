@@ -56,12 +56,45 @@ def main_cell(v: AgentView, flash: bool = False) -> Text:
 
 
 class AgentsTable(DataTable):
-    BINDINGS = [Binding("enter", "app.attach", "attach", show=False)]
+    # DataTable moves its cursor on these keys only while the cursor is shown; ours is hidden (the
+    # selection is the ▶ marker), and then it scrolls instead. So the table moves the selection itself.
+    BINDINGS = [
+        Binding("enter", "app.attach", "attach", show=False),
+        Binding("up,k", "step(-1)", "previous agent", show=False),
+        Binding("down,j", "step(1)", "next agent", show=False),
+        Binding("pageup", "step(-5)", "up", show=False),
+        Binding("pagedown", "step(5)", "down", show=False),
+        Binding("home", "jump(0)", "first agent", show=False),
+        Binding("end", "jump(-1)", "last agent", show=False),
+        # Tab walks through the agents too, round and round. The Messages panel takes a click
+        # (Tab there comes back here); conversations in full are in the comms view (c).
+        Binding("tab", "cycle(1)", "next agent", show=False),
+        Binding("shift+tab", "cycle(-1)", "previous agent", show=False),
+    ]
 
     def __init__(self, **kwargs):
         super().__init__(cursor_type="row", zebra_stripes=False, show_cursor=False, **kwargs)  # selection = ▶ + bold
         self.task_width = 28
         self._order: list[str] = []
+
+    def action_step(self, delta: int) -> None:
+        if self.row_count:
+            row = min(self.row_count - 1, max(0, self.cursor_coordinate.row + delta))
+            self.move_cursor(row=row, animate=False)
+
+    def action_jump(self, row: int) -> None:
+        if self.row_count:
+            self.move_cursor(row=row % self.row_count, animate=False)
+
+    def action_cycle(self, delta: int) -> None:
+        if self.row_count:
+            self.move_cursor(row=(self.cursor_coordinate.row + delta) % self.row_count, animate=False)
+
+    def on_click(self, event) -> None:
+        """A click selects the row under it (DataTable ignores clicks while its cursor is hidden)."""
+        row = event.style.meta.get("row") if event.style is not None else None
+        if isinstance(row, int) and 0 <= row < self.row_count:
+            self.move_cursor(row=row, animate=False)
 
     def on_mount(self) -> None:
         for key, label, width in COLUMNS:

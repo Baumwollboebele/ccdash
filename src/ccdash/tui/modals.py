@@ -201,6 +201,7 @@ class ChoiceModal(ModalScreen[str | None]):
 
 
 HELP = [
+    ("↑ ↓ / tab", "select an agent (a click works too)"),
     ("l", "tell the lead what you want; it starts the agents"),
     ("n", "new agent, set up by hand"), ("s", "stop (keeps worktree and branch)"), ("r", "restart / resume"),
     ("a / enter", "attach (Ctrl+] or Ctrl-b d detaches)"), ("p", "peek: live output in the details panel"),
