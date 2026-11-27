@@ -27,7 +27,7 @@ from . import theme
 from .theme import ACCENT, DIM, THEMES, pick_theme, reduced_motion
 
 MAIN_ACTIONS = {"new", "stop", "restart", "attach", "peek", "talk", "broadcast", "merge", "diff", "delete", "filter",
-                "network", "filemap", "comms", "claim", "toggle_hidden", "adopt", "help", "quit_dash"}
+                "network", "filemap", "comms", "claim", "toggle_hidden", "adopt", "next_repo", "help", "quit_dash"}
 VIEW_TITLES = {"network": "Network", "filemap": "File map"}
 
 FOOTER_KEYS = [("n", "new"), ("s", "stop"), ("r", "restart"), ("a", "attach"), ("p", "peek"), ("t", "talk"),
@@ -44,15 +44,20 @@ class CCDashApp(App):
         Binding("b", "broadcast", "broadcast"), Binding("m", "merge", "merge"), Binding("d", "diff", "diff"),
         Binding("x", "delete", "delete"), Binding("slash", "filter", "filter"), Binding("g", "network", "network"),
         Binding("f", "filemap", "file map"), Binding("c", "comms", "comms"), Binding("o", "claim", "owns"),
-        Binding("H", "toggle_hidden", "hidden"), Binding("A", "adopt", "adopt"),
+        Binding("H", "toggle_hidden", "hidden"), Binding("A", "adopt", "adopt"), Binding("R", "next_repo", "repo"),
         Binding("question_mark", "help", "help"), Binding("q", "quit_dash", "quit"),
     ]
 
-    def __init__(self, ws: Workspace, attach_fn=None, no_anim: bool = False, external_fn=None):
+    def __init__(self, ws: Workspace, attach_fn=None, no_anim: bool = False, external_fn=None, others=()):
         super().__init__()
-        self.ws = ws
-        self.dash = Dashboard(ws)
-        self.dash.conflicts.active = True  # this dashboard sends the notices (shared interface, what landed)
+        self.spaces: list[tuple[Workspace, Dashboard]] = []  # the repo you are in, then `repos` from the config
+        for w in (ws, *others):
+            d = Dashboard(w)
+            d.conflicts.active = True  # this dashboard sends the notices (shared interface, what landed)
+            self.spaces.append((w, d))
+        self.space = 0
+        self.ws, self.dash = self.spaces[0]
+        self._tab_hint_shown = False
         self.attach_fn = attach_fn
         self.external_fn = external_fn  # tests: receives the argv of a pager instead of running it
         self._demo_rows: list | None = None
@@ -108,6 +113,9 @@ class CCDashApp(App):
         self.set_interval(10.0, self.refresh_git_worker, name="git")
         self.set_interval(1.0, self._peek_tick, name="peek")
         self.set_interval(30.0, self._render_header, name="clock")
+        if len(self.spaces) > 1:
+            self.set_interval(10.0, self._refresh_others, name="others")
+            self._refresh_others()
 
     def watch_events(self) -> None:
         """Refresh as soon as a hook appends an event (the 2 s poll is the fallback).
@@ -190,16 +198,79 @@ class CCDashApp(App):
     # -- refresh ------------------------------------------------------------------------
     @work(thread=True, group="runtime")
     def refresh_runtime_worker(self) -> None:
+        ws, dash = self.ws, self.dash  # one repo for the whole refresh, even if you switch meanwhile
         try:
-            self.dash.refresh_runtime()
-            if (self.ws.state.root / "outbox.json").exists():
+            dash.refresh_runtime()
+            if (ws.state.root / "outbox.json").exists():
                 from .. import messaging
 
-                if messaging.flush_outbox(self.ws, self.dash):
-                    self.dash.refresh_events()
+                if messaging.flush_outbox(ws, dash):
+                    dash.refresh_events()
             self._update_peek()
+        except Exception as exc:  # noqa: BLE001  (git or a file busy for a moment: the next refresh tries again)
+            self._refresh_failed(exc)
         finally:
             self.call_from_thread(self._refresh_done)
+
+    def _refresh_failed(self, exc: Exception) -> None:
+        """A failed refresh must not take the dashboard down; say what failed, once per cause."""
+        text = f"{type(exc).__name__}: {exc}"[:300]
+        if text != getattr(self, "_last_refresh_error", None):
+            self._last_refresh_error = text
+            try:
+                self.call_from_thread(self.notify, text, title="Refresh failed, trying again", severity="warning",
+                                      timeout=8)
+            except Exception:  # noqa: BLE001  (the app is closing)
+                pass
+
+    # -- several repos (`repos` in the user config) ------------------------------------------
+    def action_next_repo(self) -> None:
+        if len(self.spaces) < 2:
+            self.notify("Only this repository. List more under repos = [...] in your user config "
+                        "(~/.config/ccdash/config.toml) to switch between them here.")
+            return
+        self._switch_repo((self.space + 1) % len(self.spaces))
+
+    def _switch_repo(self, index: int) -> None:
+        self._watch_stop.set()  # the watcher follows one state dir
+        self._watch_stop = threading.Event()
+        self.space = index
+        self.ws, self.dash = self.spaces[index]
+        self._prev.clear()
+        self._seen_messages = 0
+        self._conflict_keys = set()
+        self._booted = False
+        self.peek_lines = None
+        self.network.flights.clear()
+        self.watch_events()
+        if self.view_mode == "details":
+            self.query_one("#details-panel").border_title = "Details"
+        self.render_all()
+        self.request_refresh()
+        self.refresh_git_worker()
+
+    @work(thread=True, exclusive=True, group="others")
+    def _refresh_others(self) -> None:
+        """Keep an eye on the repos you are not looking at: who needs you there."""
+        self._others_round = getattr(self, "_others_round", 0) + 1
+        waiting = []
+        for i, (ws, dash) in enumerate(self.spaces):
+            if i == self.space:
+                continue
+            try:
+                dash.refresh_runtime()
+                if self._others_round % 6 == 1:
+                    dash.refresh_git()
+            except Exception:  # noqa: BLE001  (a repo that went away must not stop the dashboard)
+                continue
+            waiting += [(ws.repo.name, tr.name) for tr in dash.take_transitions() if tr.new == "needs_input"]
+        try:
+            for repo_name, agent in waiting:
+                self.call_from_thread(self.notify, f"{agent} in {repo_name} is waiting for you. R switches repos.",
+                                      title="Needs input", severity="warning")
+            self.call_from_thread(self._render_header)
+        except Exception:  # noqa: BLE001  (the app is closing)
+            pass
 
     def _peek_tick(self) -> None:
         if self.peek_on:
@@ -220,8 +291,11 @@ class CCDashApp(App):
 
     @work(thread=True, group="git")
     def _git_worker(self) -> None:
+        dash = self.dash
         try:
-            self.dash.refresh_git()
+            dash.refresh_git()
+        except Exception as exc:  # noqa: BLE001
+            self._refresh_failed(exc)
         finally:
             self.call_from_thread(self._git_done)
 
@@ -411,7 +485,9 @@ class CCDashApp(App):
     def _header(self) -> Text:
         c = self.dash.counts()
         default = self.ws.default_branch
+        several = len(self.spaces) > 1
         left = Text.assemble((" ccdash", f"bold {ACCENT}"), (" · ", DIM), (self.ws.repo.name, "bold"),
+                             (f" {self.space + 1}/{len(self.spaces)}" if several else "", ACCENT),
                              (f" ({default} @ {self.dash.default_sha or '…'})", DIM))
         parts = [f"{c['agents']} agent{'s' if c['agents'] != 1 else ''}", f"{c['working']} working",
                  f"{c['needs_input']} needs input", f"{c['conflicts']} conflict{'s' if c['conflicts'] != 1 else ''}"]
@@ -422,6 +498,11 @@ class CCDashApp(App):
                 mid.append(" · ", style=DIM)
             zero = part.startswith("0 ")
             mid.append(part, style=DIM if zero and i else st)
+        for i, (ws, dash) in enumerate(self.spaces):  # a repo you are not looking at where an agent waits for you
+            n = dash.counts()["needs_input"] if i != self.space else 0
+            if n:
+                mid.append(" · ", style=DIM)
+                mid.append(f"{ws.repo.name}: {n} needs input", style="yellow")
         right = Text(theme.fmt_clock(time.time()), style=DIM)
         width = max(40, self.size.width - 2)
         gap = width - len(left) - len(mid) - len(right)
@@ -573,6 +654,17 @@ class CCDashApp(App):
         v = self._selected_view(need_alive=True)
         if not v:
             return
+        mode = self.ws.cfg.open_in
+        if mode != "none":  # a new terminal tab instead of handing over this terminal
+            from .. import terminals
+
+            if terminals.open_tab(mode, v.name, self.ws.repo.main_root):
+                self.notify(f"Opened {v.name} in a new tab.")
+                return
+            if not self._tab_hint_shown:
+                self._tab_hint_shown = True
+                self.notify(terminals.VSCODE_NOTE.format(name=v.name) if mode == "vscode" else
+                            "Windows Terminal (wt.exe) was not found; attaching here.", timeout=10)
         fn = self.attach_fn or self.ws.attach
         driver = getattr(self, "_driver", None)
         if self.attach_fn is None and driver is not None and driver.can_suspend:
@@ -832,8 +924,24 @@ class CCDashApp(App):
         self.request_refresh()
 
 
-def run(no_anim: bool = False, cwd: Path | None = None) -> int:
+def open_workspaces(cwd: Path | str | None = None) -> list[Workspace]:
+    """The repo you are in, then the `repos` of the config: each once, and a path that is not
+    a usable repository is left out rather than stopping the dashboard."""
     ws = Workspace.open(cwd)
-    app = CCDashApp(ws, no_anim=no_anim)
+    out, seen = [ws], {ws.repo.main_root}
+    for path in ws.cfg.repos:
+        try:
+            other = Workspace.open(Path(path).expanduser())
+        except Exception:  # noqa: BLE001  (not a repo, a broken config, no runner)
+            continue
+        if other.repo.main_root not in seen:
+            seen.add(other.repo.main_root)
+            out.append(other)
+    return out
+
+
+def run(no_anim: bool = False, cwd: Path | None = None) -> int:
+    spaces = open_workspaces(cwd)
+    app = CCDashApp(spaces[0], no_anim=no_anim, others=spaces[1:])
     result = app.run()
     return int(result or 0)

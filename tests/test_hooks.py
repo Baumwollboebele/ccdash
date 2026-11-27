@@ -162,6 +162,9 @@ def test_status_sequence_working_needs_input_idle_finished():
         ev("SessionStart", source="startup"),
         ev("UserPromptSubmit", prompt="task"),
         ev("PreToolUse", tool_name="Edit", tool_input={"file_path": os.path.join(WT, "src/x.ts")}),
+        ev("PostToolUse", tool_name="Edit", tool_input={"file_path": os.path.join(WT, "src/x.ts")}),
+        ev("PreToolUse", tool_name="Write", tool_input={"file_path": os.path.join(WT, "src/denied.ts")}),
+        ev("PermissionDenied", tool_name="Write", tool_input={"file_path": os.path.join(WT, "src/denied.ts")}),
         ev("PermissionRequest", tool_name="Bash", tool_input={"command": "npm test"}),
         ev("Notification", notification_type="permission_prompt", message="Claude needs your permission"),
         ev("PostToolUse", tool_name="Bash", tool_input={"command": "npm test"}),
@@ -172,10 +175,10 @@ def test_status_sequence_working_needs_input_idle_finished():
         ev("Stop", last_assistant_message="All tests pass.\nDONE: CSV export works"),
         ev("SessionEnd", reason="prompt_input_exit"),
     ])
-    assert out == ["idle", "working", "working", "needs_input", "needs_input", "working", "working", "idle", "idle",
-                   "working", "finished", "stopped"]
+    assert out == ["idle", "working", "working", "working", "working", "working", "needs_input", "needs_input",
+                   "working", "working", "idle", "idle", "working", "finished", "stopped"]
     a = tr.get("csv-export")
-    assert a.touched == {"src/x.ts"}
+    assert a.touched == {"src/x.ts"}, "touched means edited: the write that was denied touched nothing"
     assert a.last.startswith("Bash")
     assert a.ended
 

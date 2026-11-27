@@ -207,6 +207,27 @@ Phases 3 to 5 were finished on another Windows machine, which differs in ways th
 - **Slow process creation** (endpoint protection). The hook timing test's 150 ms budget now scales to three bare interpreter starts where those are slow. `cc "task"` to a running agent took 3 to 5 s here (budget 5 s), and the first run after a change can exceed it once; it passes on a rerun.
 - **`claude agents --json --all`** prints an array. A background session looks like `{"id": "0a800302", "kind": "background", "cwd": …, "startedAt": <ms>, "sessionId": "0a800302-237e-…", "name": …, "state": "blocked"}`; an interactive one has `pid` and `status` (`"idle"`) instead of `id` and `state`. The short id is the start of the session id. `--cwd <path>` filters by start directory. This is what the `bg` runner reads.
 
+### Phase 5: what the docs say about hook decisions and background sessions
+
+Read at code.claude.com (hooks reference, agent view, CLI reference) on Nov 27, 2026, plus `claude --help` of 2.1.332. **None of this was run against a real session**: the tests use fakes that follow these rules (`tests/fake_claude.py`, `tests/fake_claude_bg.py`).
+
+**PreToolUse decisions (guard mode)**
+
+- The output is `{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": …, "permissionDecisionReason": …, "updatedInput": …, "additionalContext": …}}`. `permissionDecision` is `allow`, `deny`, `ask` or `defer`.
+- `allow` skips the user's permission prompt. So guard's `warn` does **not** return `allow` (the earlier plan did): it returns only `additionalContext`, and the normal permission flow decides. The docs do not say outright that `permissionDecision` may be left out; they say a hook with no decision leaves the call to the normal flow, and list no field as required.
+- `additionalContext` reaches Claude next to the tool result, so after the edit. `deny` shows `permissionDecisionReason` to Claude.
+- An `async: true` command hook cannot decide anything. That is why guard mode registers PreToolUse synchronously under the command transport.
+- An HTTP hook's response body is read like a command hook's stdout. An empty body or `{}` means no decision; a non-2xx status or a timeout does not block the tool.
+
+**Background sessions (`runner = "bg"`)**
+
+- `claude --bg "<prompt>"` prints `backgrounded · <short id> · <name>` and returns; a supervisor process owns the session. `--name` and `--model` are documented with it; `--session-id` and `--permission-mode` are not, so the runner drops `--session-id` and reads the id from the list.
+- Only `PATH` is documented to reach the session from the shell that started it. The hooks of a bg agent therefore carry the agent's name, state dir and worktree as arguments.
+- `claude agents --json [--all] [--cwd <path>]`: `state` is `working`, `blocked`, `done`, `failed` or `stopped`; `pid` and `status` (`busy`, `waiting`, `idle`) are present only while the process is alive. The runner treats "has a pid" as alive.
+- There is no documented way to type into a background session from a script. Talk, broadcast and ccdash's notices fail for bg agents with a message that says so.
+- `claude --bg --resume <session id>` continues a session under its id; `claude stop <id>` stops it and keeps the conversation; `claude logs <id>` prints recent output (no flags documented); in `claude attach <id>`, ← on an empty prompt or Ctrl+Z detaches.
+- **Open risk:** the docs say a background session moves itself into its own worktree under `.claude/worktrees/` before it edits files, "unless an exception applies". Whether a session started inside a ccdash worktree stays there is not documented. Check this first when trying `runner = "bg"` for real.
+
 ## Side effects on this machine
 
 - Accepting the trust dialog once added the temp repo to `~/.claude.json` (`projects["C:/…/scratchpad/p0/repo"].hasTrustDialogAccepted = true`). This is also where ccdash can check trust before spawning.

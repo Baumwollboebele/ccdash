@@ -24,19 +24,21 @@ def _package_parent() -> str:
     return str(Path(ccdash.__file__).resolve().parent.parent)
 
 
-def command_hook(event: str, sync: bool | None = None) -> dict:
+def command_hook(event: str, sync: bool | None = None, ident: tuple[str, str, str] | None = None) -> dict:
+    """`ident` = (agent, state dir, worktree) as arguments, for sessions that do not get our environment."""
     from .runner import python_exe
 
     boot = f"import sys;sys.path.insert(0,{_package_parent()!r});from ccdash.hook import main;main()"
     is_sync = event in SYNC_EVENTS if sync is None else sync
-    return {"type": "command", "command": python_exe(), "args": ["-I", "-S", "-c", boot, event],
+    return {"type": "command", "command": python_exe(), "args": ["-I", "-S", "-c", boot, event, *(ident or ())],
             "timeout": 10, "async": not is_sync}
 
 
-def render_command(guard: bool = False) -> dict:
+def render_command(guard: bool = False, ident: tuple[str, str, str] | None = None) -> dict:
+    """Guard mode needs PreToolUse to be synchronous: an async hook cannot return a decision."""
     hooks = {}
     for ev in COMMAND_EVENTS:
-        h = command_hook(ev, sync=True if (guard and ev == "PreToolUse") else None)
+        h = command_hook(ev, sync=True if (guard and ev == "PreToolUse") else None, ident=ident)
         hooks[ev] = [{"hooks": [h]}]
     return {"hooks": hooks}
 
@@ -66,4 +68,5 @@ def for_agent(ws, rec):
     """'http' (the host renders the settings once it knows its port) or a settings dict."""
     if transport(ws) == "http":
         return "http"
-    return render_command(guard=ws.cfg.guard != "off")
+    ident = (rec.name, str(ws.state.root), str(rec.worktree or "")) if ws.runner.kind == "bg" else None
+    return render_command(guard=ws.cfg.guard != "off", ident=ident)

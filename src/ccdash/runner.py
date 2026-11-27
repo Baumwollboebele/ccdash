@@ -553,5 +553,5 @@ def get_runner(cfg, state: State, repo: Repo) -> Runner:
     if kind == "bg":
         from .bgrunner import BgRunner
 
-        return BgRunner(state, repo)
+        return BgRunner(state, repo, cfg)
     raise RuntimeError(f"unknown runner {kind!r}")

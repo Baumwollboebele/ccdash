@@ -207,7 +207,7 @@ HELP = [
     ("m", "merge menu: rebase, merge locally, open a PR"), ("d", "diff against the default branch"),
     ("x", "delete worktree and branch"), ("/", "filter by name, status or file"),
     ("o", "claim paths the selected agent owns"), ("g", "network view"), ("f", "file map"), ("c", "comms view"),
-    ("H", "show hidden (deleted) agents"),
+    ("H", "show hidden (deleted) agents"), ("R", "next repository (repos in your user config)"),
     ("A", "adopt an untracked worktree"), ("q", "quit (agents keep running)"),
 ]
 

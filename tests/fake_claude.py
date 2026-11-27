@@ -94,39 +94,58 @@ class Session:
             **fields,
         }
         body = json.dumps(payload).encode("utf-8")
-        threads = []
+        threads, outputs = [], []
         for group in self.hooks.get(event, []):
             matcher = group.get("matcher") or "*"
             tool = fields.get("tool_name")
             if tool and matcher not in ("*", "") and tool not in matcher.split("|"):
                 continue
             for h in group.get("hooks", []):
-                t = threading.Thread(target=self._run_hook, args=(h, body), daemon=True)
+                sync = not h.get("async")  # an async hook cannot decide anything: its output is ignored
+                t = threading.Thread(target=self._run_hook, args=(h, body, outputs if sync else None), daemon=True)
                 t.start()
-                if not h.get("async"):
+                if sync:
                     threads.append(t)
         for t in threads:
             t.join(timeout=10)
+        return [o["hookSpecificOutput"] for o in outputs if isinstance(o.get("hookSpecificOutput"), dict)]
 
-    def _run_hook(self, h, body):
+    def _run_hook(self, h, body, outputs=None):
         try:
             if h.get("type") == "http":
                 req = urllib.request.Request(h["url"], data=body, headers={"Content-Type": "application/json"})
-                urllib.request.urlopen(req, timeout=h.get("timeout", 5)).read()
+                raw = urllib.request.urlopen(req, timeout=h.get("timeout", 5)).read()
             elif "args" in h:
-                subprocess.run([h["command"], *h["args"]], input=body, capture_output=True, timeout=h.get("timeout", 60))
+                raw = subprocess.run([h["command"], *h["args"]], input=body, capture_output=True,
+                                     timeout=h.get("timeout", 60)).stdout
             else:
-                subprocess.run(h["command"], shell=True, input=body, capture_output=True, timeout=h.get("timeout", 60))
+                raw = subprocess.run(h["command"], shell=True, input=body, capture_output=True,
+                                     timeout=h.get("timeout", 60)).stdout
+            if outputs is not None and raw.strip():
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    outputs.append(parsed)
         except Exception:  # noqa: BLE001  (hook failures never break the session)
             pass
 
     # -- behaviour ---------------------------------------------------------
     def tool(self, name, tool_input, action=None, response=None):
-        self.fire("PreToolUse", tool_name=name, tool_input=tool_input, tool_use_id=f"toolu_{uuid.uuid4().hex[:12]}")
+        """Like Claude Code: a PreToolUse hook may deny the call (the tool does not run and Claude sees
+        the reason), or add context that Claude gets next to the tool result."""
+        verdicts = self.fire("PreToolUse", tool_name=name, tool_input=tool_input,
+                             tool_use_id=f"toolu_{uuid.uuid4().hex[:12]}")
+        for v in verdicts:
+            if v.get("permissionDecision") == "deny":
+                out(f"x {name} denied: {v.get('permissionDecisionReason', '')}")
+                return False
         if action:
             action()
         self.fire("PostToolUse", tool_name=name, tool_input=tool_input, tool_response=response or {"ok": True},
                   tool_use_id=f"toolu_{uuid.uuid4().hex[:12]}")
+        for v in verdicts:
+            if v.get("additionalContext"):
+                out(f"  note: {v['additionalContext']}")
+        return True
 
     def run_steps(self, steps):
         for step in steps:
@@ -167,9 +186,12 @@ class Session:
                 self.fire("PreToolUse", tool_name=tool, tool_input=ti, tool_use_id="toolu_perm")
                 self.fire("PermissionRequest", tool_name=tool, tool_input=ti)
                 out(f"Do you want to use {tool}?  1. Yes  2. No")
-                threading.Timer(0.5, lambda: self.fire("Notification", notification_type="permission_prompt",
-                                                       message="Claude needs your permission")).start()
+                reminder = threading.Timer(0.5, lambda: self.fire("Notification", notification_type="permission_prompt",
+                                                                  message="Claude needs your permission"))
+                reminder.start()
                 answer = read_line()
+                reminder.cancel()  # no "needs your permission" after the dialog was answered
+                reminder.join(timeout=5)  # one already on its way lands before the events that follow
                 if answer is None:
                     return
                 if answer.strip().lower() in ("", "1", "y", "yes"):

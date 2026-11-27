@@ -79,11 +79,11 @@ class ActivityTracker:
             else:
                 a.last = tool
             a.last_ts = t
-            if tool in hook.EDIT_TOOLS and path:
-                a.touched.add(path)
             if hook.is_test_command(cmd):
                 a.tests, a._pending_test = "running", True
         elif event == "PostToolUse":
+            if tool in hook.EDIT_TOOLS and path:  # the edit happened; one that was denied touched nothing
+                a.touched.add(path)
             if a._pending_test and hook.is_test_command(cmd):
                 a.tests, a._pending_test = "passed", False
             if hook.is_commit_command(cmd):

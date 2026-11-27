@@ -164,8 +164,14 @@ def _send(ws, name: str, text: str, sender: str, d) -> str:
         _outbox_edit(ws, lambda items: items + [{"to": name, "typed": typed, "text": text, "from": sender,
                                                  "t": time.time()}])
         return "queued"
-    _deliver(ws, name, typed)
-    return "sent"
+    return "sent" if _deliver(ws, name, typed) else "failed"
+
+
+def _cannot_type(name: str):
+    from .workspace import WorkspaceError
+
+    return WorkspaceError(f"cannot type into {name}: its session takes no input from outside (a background "
+                          f"session, or it just exited). Attach to it instead.")
 
 
 def send_from_user(ws, name: str, text: str, dashboard=None) -> str:
@@ -174,6 +180,8 @@ def send_from_user(ws, name: str, text: str, dashboard=None) -> str:
         return "nothing to send"
     d = _dashboard(ws, dashboard)
     res = _send(ws, name, text, "you", d)
+    if res == "failed":
+        raise _cannot_type(name)
     ws.state.append_event({"agent": name, "event": "ccdash.message", "from": "you", "to": name, "text": text,
                            "queued": res == "queued", "t": time.time()})
     return (f"{name} is waiting for a permission answer; message queued" if res == "queued" else f"sent to {name}")
@@ -191,7 +199,8 @@ def broadcast_from_user(ws, text: str, dashboard=None, sender: str = "you", excl
         if exclude and name in exclude:
             continue
         res = _send(ws, name, text, sender, d)
-        recipients.append(name)
+        if res != "failed":
+            recipients.append(name)
         queued |= res == "queued"
         out.append(f"{res} {'to' if res == 'sent' else 'for'} {name}")
     if recipients:
@@ -208,6 +217,8 @@ def notice(ws, to: str, text: str, dashboard=None) -> str:
         return "sent"
     d = _dashboard(ws, dashboard)
     res = _send(ws, to, text, "ccdash", d)
+    if res == "failed":
+        raise _cannot_type(to)
     ws.state.append_event({"agent": to, "event": "ccdash.message", "from": "ccdash", "to": to, "text": text,
                            "queued": res == "queued", "t": time.time()})
     return res

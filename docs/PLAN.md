@@ -111,6 +111,7 @@ One screen, four panels: the agent table on top, details of the selected agent o
 | `/` | Filter | By name, status or file path |
 | `o` | Owns | Claim paths or globs for the selected agent (see Coordination) |
 | `g` / `f` / `c` | Views | Network, File map, Comms (see Look and feel) |
+| `R` | Next repo | Only with `repos` in the user config |
 | `q` | Quit | Agents keep running |
 
 Colors: working green, needs input yellow and sorted to the top, conflict red, finished blue, stopped grey. The header counts must match the table; its conflict count is the number of predicted merge conflicts (the red rows), not every row of the Conflicts panel.
@@ -225,9 +226,9 @@ A `UserPromptSubmit` whose prompt starts with `<cross-session-message` is an inc
 Agents avoid breaking each other in four layers. Each is a backstop for the one before it.
 
 1. **Protocol prompt (prevention).** Every agent starts with the coordination protocol from the existing `cc` script, plus the live agent list from `agents.json` with each agent's task and owned paths. The agent must announce its scope with `SendMessage` before editing, and warn dependents before changing a shared interface. Keep the protocol text in `src/ccdash/protocol.md` so it can be edited without code changes.
-2. **File ownership (detection, live).** Every `Edit`/`Write`/`MultiEdit`/`NotebookEdit` event adds its path to that agent's touched set. A path touched by two running agents produces an **overlap** row. A path may also be claimed up front: the agent's announced scope is parsed from its first `SendMessage` if it contains a `Files:` line, and the user can claim paths for an agent from the details panel.
+2. **File ownership (detection, live).** Every completed `Edit`/`Write`/`MultiEdit`/`NotebookEdit` (its `PostToolUse` event, so an edit that was denied counts for nothing) adds its path to that agent's touched set. A path touched by two running agents produces an **overlap** row. A path may also be claimed up front: the agent's announced scope is parsed from its first `SendMessage` if it contains a `Files:` line, and the user can claim paths for an agent from the details panel.
 3. **Predicted merge conflicts (detection, git).** For every agent branch, run `git merge-tree --write-tree --name-only <default-branch> <branch>`; exit code 1 means a conflict, and the output lists the files. Also run it pairwise between agent branches that share a touched file. Cache results by the commit-SHA pair. Uncommitted work is not covered by this check; the overlap check covers it. On git older than 2.38, which has no `--write-tree`, ccdash uses the three-way `git merge-tree <merge-base> <ours> <theirs>` and reads the conflicts from its output (no rename detection).
-4. **Guard mode (enforcement, optional).** With `guard = "warn"` or `"block"` in config, the `PreToolUse` hook checks the target path against other agents' claims. On a hit it returns a hook decision (`hookSpecificOutput.permissionDecision` plus `permissionDecisionReason` / `additionalContext`): `warn` lets the edit through but adds context telling Claude which agent owns the file and to message it; `block` denies the edit with that reason. This needs a synchronous `PreToolUse` hook, so it costs one Python start (~60 ms on Windows) per tool call while enabled. Default is `off` until Phase 5.
+4. **Guard mode (enforcement, optional).** With `guard = "warn"` or `"block"` in config, the `PreToolUse` hook checks the target path against other agents' claims and the files they changed. On a hit it returns a hook decision: `warn` lets the edit through and adds `additionalContext` telling Claude which agent holds the file and to message it (no `permissionDecision`: `allow` would skip your own permission prompt); `block` returns `permissionDecision: "deny"` with that explanation as the reason. On Windows the decision is made in the agent's host, which also follows the event log, so it works with no dashboard open and costs no process. Under the command transport it needs a synchronous `PreToolUse` hook, so it costs one Python start per tool call while enabled, and knows only what a dashboard last wrote to `ownership.json`. The first agent to edit a file holds it; a denied attempt holds nothing, and an agent that already changed the file itself is warned rather than blocked. Default is `off`.
 
 **Shared interfaces.** The repo config lists globs that many agents depend on, for example `src/api/**`, `migrations/**`, `src/types/**`, `package.json`. When an agent's branch changes one, the Conflicts panel shows a **shared** row. If that agent did not send a message mentioning the change within 2 minutes, ccdash broadcasts a short notice to all other running agents itself. It does so once per agent and glob, and only from an open dashboard: `cc ls` and the other commands never send anything.
 
@@ -329,6 +330,11 @@ test           = "npm test"       # used by local merge
 guard          = "off"            # off | warn | block
 shared         = ["src/api/**", "migrations/**", "src/types/**", "package.json"]
 max_agents     = 6
+
+# Phase 5 extras, all off by default
+# runner  = "bg"                  # run agents as Claude Code background sessions (claude --bg): no talk/broadcast
+# open_in = "wt"                  # attach opens a new Windows Terminal tab instead of taking over this terminal
+# repos   = ["C:/src/api-server"] # user config: more repositories in the same dashboard, R switches
 ```
 
 **Project structure**
@@ -348,7 +354,10 @@ ccdash/
     hook.py           # the hook entry point: fast, stdlib only, no Textual import
     hookserver.py     # the host's localhost endpoint for HTTP hooks (Windows)
     hooks_settings.py # renders the --settings hook registration
-    runner.py         # Runner protocol + WinPtyRunner + TmuxRunner (BgRunner later)
+    runner.py         # Runner protocol + WinPtyRunner + TmuxRunner
+    bgrunner.py       # BgRunner: Claude Code's own background sessions (runner = "bg")
+    guard.py          # guard mode: the PreToolUse decision (warn / block)
+    terminals.py      # open an agent in a new terminal tab (open_in)
     host.py           # `ccdash host`: owns one agent's ConPTY, pyte screen, named pipe (Windows)
     pipeproto.py      # request/attach framing over the host's named pipe
     attach.py         # `cc attach <name>`: raw-console proxy to a host (Windows)
@@ -390,8 +399,9 @@ Build in six phases. Each phase ends with a working tool and its acceptance chec
    - Done when: every animation in the Look and feel table exists; `--no-anim` removes all motion; idle CPU under 3%.
 5. **Phase 4: Conflicts and merge.** Ownership tracking, overlap, `merge-tree` predictions with SHA cache, shared-interface rows and auto-notice, merge state column, merge menu, PR via `gh`, post-merge notices and cleanup, File map view.
    - Done when: the conflict scenarios in Testing all show the right rows; a local merge of a ready agent works and notifies the others; nothing ever force-pushes.
-6. **Phase 5: Extras.** Guard mode (`warn`/`block`), a `claude --bg` runner backend, multiple repos in one screen, opening an agent in a new VS Code terminal tab.
+6. **Phase 5: Extras.** Guard mode (`warn`/`block`), a `claude --bg` runner backend, multiple repos in one screen, opening an agent in a new terminal tab.
    - Done when: each extra is behind a config flag and off by default.
+   - As built: `guard`, `runner = "bg"`, `repos` (a switcher on `R`, with a header hint when an agent in another repo needs you) and `open_in = "wt"`. A new VS Code terminal tab is not possible: VS Code has no command line for it, so `open_in = "vscode"` says so and attaches in place.
 
 ## Testing strategy
 

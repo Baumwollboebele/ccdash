@@ -308,6 +308,20 @@ async def test_new_conflict_row_flashes_red(repo):
         assert not app.motion.active(("conflict", Row.key))
 
 
+async def test_a_failing_refresh_does_not_take_the_dashboard_down(repo):
+    app = frozen_app(repo, [view("a", "idle")])
+
+    def boom():
+        raise RuntimeError("git is busy")
+
+    app.dash.refresh_runtime = boom
+    app.dash.refresh_git = boom
+    async with app.run_test(size=SIZE) as pilot:
+        await ticks(pilot, 6)
+        assert app.is_running and "a" in [str(k.value) for k in app.table.rows]
+        assert "git is busy" in app._last_refresh_error, "said once, and the next refresh tries again"
+
+
 # -- idle CPU -------------------------------------------------------------------------------
 async def test_idle_cpu_under_3_percent(repo):
     app = frozen_app(repo, [view(f"agent-{i}", "idle") for i in range(5)])

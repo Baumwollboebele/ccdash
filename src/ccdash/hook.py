@@ -6,9 +6,9 @@ Two ways in, one format out:
   * HTTP hooks (Windows): the agent's host calls handle() for each POST.
 Either way one JSON line is appended to <state>/events.jsonl under events.lock.
 
-Rules: stdlib only, no stdout, never raise, always exit 0, drop the event when the
-state dir is missing or the lock is busy for more than ~200 ms. Phase 0 findings
-behind the mapping are in docs/findings.md.
+Rules: stdlib only, no stdout (except a guard-mode decision, see main), never raise,
+always exit 0, drop the event when the state dir is missing or the lock is busy for
+more than ~200 ms. Phase 0 findings behind the mapping are in docs/findings.md.
 """
 
 from __future__ import annotations
@@ -270,13 +270,28 @@ def handle(event: str, body: bytes, agent: str, state_dir: str, worktree: str | 
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Command-hook entry point. Never writes to stdout, never raises."""
+    """Command-hook entry point: `<event> [agent state_dir worktree]`. Never raises.
+
+    The agent's identity comes from the arguments when given (a `claude --bg` session is not
+    documented to inherit our environment), else from CCDASH_AGENT / CCDASH_STATE / CCDASH_WORKTREE.
+    Nothing is written to stdout, with one exception: in guard mode a PreToolUse hook prints
+    its decision (see guard.py), which is why that hook is registered synchronously then."""
     try:
         argv = sys.argv[1:] if argv is None else argv
         event = argv[0] if argv else "Unknown"
         body = sys.stdin.buffer.read()
-        agent, state = os.environ.get("CCDASH_AGENT"), os.environ.get("CCDASH_STATE")
+        given = (argv[1:4] + ["", "", ""])[:3]
+        agent = given[0] or os.environ.get("CCDASH_AGENT")
+        state = given[1] or os.environ.get("CCDASH_STATE")
+        worktree = given[2] or os.environ.get("CCDASH_WORKTREE")
         if agent and state:
-            handle(event, body, agent, state, os.environ.get("CCDASH_WORKTREE"))
+            line = handle(event, body, agent, state, worktree)
+            if event == "PreToolUse" and line is not None and os.path.exists(os.path.join(state, "guard.json")):
+                from .guard import Guard
+
+                decision = Guard(state, agent).decide(line)
+                if decision:
+                    sys.stdout.write(json.dumps(decision))
+                    sys.stdout.flush()
     except BaseException:  # noqa: BLE001  (a hook must never break or slow the agent)
         pass

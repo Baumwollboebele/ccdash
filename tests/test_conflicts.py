@@ -49,7 +49,8 @@ def view(name, alive=True, **kw):
 
 
 def edit(agent, path, t=None):
-    return {"agent": agent, "event": "PreToolUse", "tool": "Edit", "path": path, "t": t or time.time()}
+    """An edit that happened (PostToolUse): a PreToolUse alone may still be denied."""
+    return {"agent": agent, "event": "PostToolUse", "tool": "Edit", "path": path, "t": t or time.time()}
 
 
 def say(agent, to, text, t=None):

@@ -103,6 +103,18 @@ def test_remove_worktree_keeps_nothing(repo, ctx):
     assert "gone" not in repo.git("worktree", "list").stdout
 
 
+def test_list_worktrees_survives_git_failing_for_a_moment(repo, ctx, monkeypatch):
+    """While a worktree is being removed, `git worktree list` can exit 128; a refresh must not die of it."""
+    import subprocess
+
+    r, cfg = ctx
+    worktree.create_worktree(r, cfg, "here", base="main")
+    assert any(w.get("branch") == "cc/here" for w in worktree.list_worktrees(r))
+    monkeypatch.setattr(worktree.gitutil, "git", lambda args, cwd, **kw: subprocess.CompletedProcess(
+        args, 128, "", "fatal: failed to read .git/worktrees/here/commondir: No such file or directory"))
+    assert worktree.list_worktrees(r) == []
+
+
 # -- git-derived state ---------------------------------------------------------
 def test_branch_state_ahead_behind_dirty_merged(repo, ctx):
     r, cfg = ctx

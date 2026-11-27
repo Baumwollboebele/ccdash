@@ -201,7 +201,7 @@ class ConflictTracker:
     # -- input ----------------------------------------------------------------------
     def on_event(self, line: dict) -> None:
         """Remember when an agent first edited each path (for the shared-interface timer)."""
-        if line.get("event") == "PreToolUse" and line.get("tool") in hook.EDIT_TOOLS and line.get("path"):
+        if line.get("event") == "PostToolUse" and line.get("tool") in hook.EDIT_TOOLS and line.get("path"):
             key = (line.get("agent"), line["path"])
             t = float(line.get("t") or self.clock())
             if t < self._first_edit.get(key, float("inf")):

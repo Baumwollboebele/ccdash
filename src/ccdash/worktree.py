@@ -170,8 +170,14 @@ def remove_worktree(repo: Repo, path: Path, branch: str, force: bool = False) ->
 
 
 def list_worktrees(repo: Repo) -> list[dict]:
-    """`git worktree list --porcelain` as dicts with path, head, branch."""
-    out = gitutil.git(["worktree", "list", "--porcelain"], repo.main_root).stdout
+    """`git worktree list --porcelain` as dicts with path, head, branch.
+
+    Empty when git fails: while a worktree is being removed, its half-deleted admin dir makes
+    the command exit 128 for a moment, and a refresh must not die of that."""
+    p = gitutil.git(["worktree", "list", "--porcelain"], repo.main_root, check=False)
+    if p.returncode != 0:
+        return []
+    out = p.stdout
     items, cur = [], {}
     for line in out.splitlines() + [""]:
         if not line:

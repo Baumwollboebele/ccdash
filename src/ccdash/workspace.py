@@ -110,6 +110,25 @@ class Workspace:
         self.state.ensure()
         self.registry = Registry(self.state)
         self.runner = runner or get_runner(cfg, self.state, repo)
+        self._publish_guard()
+
+    def _publish_guard(self) -> None:
+        """Hosts and hooks do not read the config: they find the guard mode in the state dir (guard.py)."""
+        import json
+
+        from .state import atomic_write_json
+
+        path = self.state.root / "guard.json"
+        try:
+            current = json.loads(path.read_text(encoding="utf-8")).get("mode")
+        except (OSError, ValueError, AttributeError):
+            current = None
+        if current == self.cfg.guard or (current is None and self.cfg.guard == "off"):
+            return
+        try:
+            atomic_write_json(path, {"mode": self.cfg.guard})
+        except OSError:
+            pass
 
     @classmethod
     def open(cls, cwd: Path | str | None = None) -> "Workspace":
@@ -227,8 +246,9 @@ class Workspace:
         started = time.time()
         info = self.runner.start(rec, claude_command(self.cfg), args, agent_env(self.state, rec.name, rec.worktree),
                                  Path(rec.worktree), settings=self.hook_settings(rec))
-        self.registry.update(rec.name, lifecycle="running", stop_requested=False,
-                             claude_session_id=resume or session_id, session=info.get("pipe") or info.get("session", ""),
+        self.registry.update(rec.name, lifecycle="running", stop_requested=False,  # a runner may know the id better
+                             claude_session_id=info.get("session_id") or resume or session_id,
+                             session=info.get("pipe") or info.get("session", ""),
                              host_pid=info.get("host_pid"), claude_pid=info.get("claude_pid"), started_at=started)
 
     # -- stop / restart ---------------------------------------------------------------
