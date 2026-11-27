@@ -16,7 +16,7 @@ from .config import Config, load_config
 from .model import AgentRecord
 from .naming import is_valid_name, slugify, unique_name
 from .prompt import render_prompt
-from .repo import Repo, default_branch, discover, fetch_if_stale, resolve_base
+from .repo import Repo, compare_ref, default_branch, discover, fetch_if_stale, resolve_base
 from .runner import Runner, agent_env, claude_args, claude_command, get_runner, is_trusted, session_exists
 from .state import Registry, State
 
@@ -138,6 +138,10 @@ class Workspace:
     @cached_property
     def default_branch(self) -> str:
         return default_branch(self.repo, self.cfg)
+
+    def compare_ref(self) -> str:
+        """What agent branches are measured against right now (see repo.compare_ref)."""
+        return compare_ref(self.repo, self.default_branch)
 
     @property
     def worktree_root(self) -> Path:
@@ -280,7 +284,7 @@ class Workspace:
     # -- delete / adopt -----------------------------------------------------------------
     def delete_check(self, name: str) -> DeleteCheck:
         rec = self.record(name)
-        risk = gitstate.work_at_risk(self.repo, self.default_branch, Path(rec.worktree) if rec.worktree else None,
+        risk = gitstate.work_at_risk(self.repo, self.compare_ref(), Path(rec.worktree) if rec.worktree else None,
                                      rec.branch)
         return DeleteCheck(name=name, lost=risk.describe(self.default_branch),
                            needs_confirmation=bool(risk.uncommitted or risk.unmerged_commits),
@@ -379,8 +383,8 @@ class Workspace:
             self.fill_git(views)
         return views
 
-    def fill_git(self, views: list[AgentView]) -> None:
-        default = self.default_branch
+    def fill_git(self, views: list[AgentView], ref: str | None = None) -> None:
+        default = ref or self.compare_ref()
 
         def one(v: AgentView) -> None:
             if not v.branch or v.status == "deleted":

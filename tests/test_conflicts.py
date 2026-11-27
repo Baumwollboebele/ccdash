@@ -208,6 +208,46 @@ def test_stale_base_row(repo, ws):
     assert d.counts()["conflicts"] == 0
 
 
+def test_agent_started_from_a_newer_origin_is_measured_against_origin(repo, ws, tmp_path):
+    """Local main is behind origin/main (someone pushed, you fetched but did not pull). A new agent
+    starts from origin's copy; it must not look as if it had done origin's work."""
+    from ccdash.repo import compare_ref, resolve_base
+
+    other = tmp_path / "colleague"
+    repo.git("clone", "-q", str(repo.origin), str(other), cwd=tmp_path)
+    for i in range(2):
+        repo.write(f"docs/upstream-{i}.md", "x\n", cwd=other)
+        repo.commit(f"upstream {i}", cwd=other)
+    repo.git("push", "-q", "origin", "main", cwd=other)
+    repo.git("fetch", "-q", "origin")
+    assert compare_ref(ws.repo, "main") == "origin/main" == resolve_base(ws.repo, "main", None)
+
+    wt = worktree.create_worktree(ws.repo, ws.cfg, "fresh", resolve_base(ws.repo, "main", None))
+    ws.registry.put(AgentRecord(name="fresh", task="t", worktree=str(wt.path), branch=wt.branch, base_ref=wt.base_ref,
+                                base_sha=wt.base_sha, lifecycle="stopped", runner=ws.runner.kind, adopted=True))
+    add_agent(ws, "other")  # from the older local main
+    d, _ = tracked(ws)
+    d.refresh_all()
+    v = d.get("fresh")
+    assert (v.ahead, v.behind, v.files, v.merge_state) == (0, 0, 0, "clean"), "it has done nothing yet"
+    assert d.get("other").behind == 2
+    assert d.conflicts.rows == [], "two idle agents do not overlap in files neither of them touched"
+    assert not ws.delete_check("fresh").needs_confirmation, "nothing of its own would be lost"
+    assert not merge.has_diff(ws, "cc/fresh")
+
+    repo.write("docs/mine.md", "mine\n", cwd=wt.path)
+    repo.commit("the agent's own work", cwd=wt.path)
+    d.refresh_all()
+    v = d.get("fresh")
+    assert (v.ahead, v.files, v.merge_state) == (1, 1, "ready") and v.changed_paths == ["docs/mine.md"]
+    with pytest.raises(merge.MergeError, match="behind origin/main by 2"):
+        merge.merge_local(ws, "fresh", d)  # merging would drag origin's commits in: pull first
+    repo.git("merge", "-q", "--ff-only", "origin/main")
+    assert compare_ref(ws.repo, "main") == "main"
+    d.refresh_all()
+    assert merge.merge_local(ws, "fresh", d).files == ["docs/mine.md"]
+
+
 # -- overlap and claims (hook events, no git) -----------------------------------------------
 def test_overlap_from_edits_and_dirty_files(repo, ws):
     d, _ = tracked(ws)

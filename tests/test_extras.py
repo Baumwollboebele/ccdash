@@ -204,7 +204,9 @@ def bg_ws(repo, sandbox, monkeypatch):
 
 def test_bg_runner_start_status_peek_stop_restart(bg_ws, repo, set_scenario):
     ws = bg_ws
-    set_scenario([{"edit": "src/ui/Toolbar.tsx", "text": "// bg\n"}, {"say": "DONE: in the background"}])
+    # The pause is Claude thinking between the tool result and its last message. Without it the async
+    # command hooks of PostToolUse and Stop start within a millisecond and may finish in either order.
+    set_scenario([{"edit": "src/ui/Toolbar.tsx", "text": "// bg\n"}, {"sleep": 0.8}, {"say": "DONE: in the background"}])
     rec = ws.new_agent("work in the background", name="bg-one")
     assert ws.runner.kind == "bg" and rec.runner == "bg"
     assert len(rec.session) == 8 and rec.claude_session_id.startswith(rec.session), "ids read back from claude"

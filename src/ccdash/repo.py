@@ -108,26 +108,32 @@ def fetch_if_stale(repo: Repo, branch: str, max_age: float = 24 * 3600, timeout:
         pass
 
 
-def resolve_base(repo: Repo, default: str, base: str | None) -> str:
-    """The ref a new agent branches from.
-
-    `HEAD` means the main checkout's HEAD. Otherwise the default branch: the local
-    branch, unless origin's copy is strictly ahead of it (then origin's), so agents
-    start from work you merged locally as well as from what landed upstream.
-    """
-    if base and base != default:
-        return base
-    local = f"refs/heads/{default}"
-    remote = f"refs/remotes/origin/{default}"
-    has_local = gitutil.ok(["show-ref", "--verify", "--quiet", local], repo.main_root)
-    has_remote_ref = gitutil.ok(["show-ref", "--verify", "--quiet", remote], repo.main_root)
-    if has_local and has_remote_ref:
-        if gitutil.ok(["merge-base", "--is-ancestor", local, remote], repo.main_root) and \
-                gitutil.out(["rev-parse", local], repo.main_root) != gitutil.out(["rev-parse", remote], repo.main_root):
+def compare_ref(repo: Repo, default: str) -> str:
+    """The default branch as agents see it: the local branch, unless origin's copy is strictly
+    ahead of it (then origin's). New agents start from this ref, and agent branches are
+    measured against it (ahead/behind, changed files, merged, predicted conflicts). Measured
+    against a local branch that is behind origin, a fresh agent would seem to have made
+    every upstream commit itself."""
+    local_ref, remote_ref = f"refs/heads/{default}", f"refs/remotes/origin/{default}"
+    out = gitutil.out(["for-each-ref", "--format=%(refname) %(objectname)", local_ref, remote_ref], repo.main_root,
+                      check=False)
+    refs = dict(line.split(" ", 1) for line in out.splitlines() if " " in line)
+    local, remote = refs.get(local_ref), refs.get(remote_ref)
+    if local and remote:
+        if local != remote and gitutil.ok(["merge-base", "--is-ancestor", local, remote], repo.main_root):
             return f"origin/{default}"
         return default
-    if has_local:
+    if local:
         return default
-    if has_remote_ref:
+    if remote:
         return f"origin/{default}"
     return "HEAD"
+
+
+def resolve_base(repo: Repo, default: str, base: str | None) -> str:
+    """The ref a new agent branches from: `base` if given (`HEAD` means the main checkout's
+    HEAD), otherwise the default branch as compare_ref sees it, so agents start from work
+    you merged locally as well as from what landed upstream."""
+    if base and base != default:
+        return base
+    return compare_ref(repo, default)

@@ -233,7 +233,7 @@ class ConflictTracker:
                 views = [v for v in dashboard.views.values() if v.status not in ("untracked", "deleted")]
             self._collect(dashboard, views)
             if git:
-                self._predict(views)
+                self._predict(views, getattr(dashboard, "default_ref", "") or self.ws.compare_ref())
                 self._pull_requests(views)
                 self._landings(dashboard, views)
             shared = self._shared(dashboard, views)
@@ -275,10 +275,9 @@ class ConflictTracker:
         return sorted(files)
 
     # -- predicted merge conflicts ---------------------------------------------------------
-    def _predict(self, views) -> None:
+    def _predict(self, views, ref: str) -> None:
         root = self.ws.repo.main_root
-        default_sha = gitutil.out(["rev-parse", "--verify", "--quiet", f"{self.ws.default_branch}^{{commit}}"], root,
-                                  check=False)
+        default_sha = gitutil.out(["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], root, check=False)
         cands = sorted((v for v in views if v.branch and v.head_sha and v.ahead > 0 and v.name not in self._merged),
                        key=lambda v: v.name)
         jobs: dict[tuple, tuple[str, str]] = {}

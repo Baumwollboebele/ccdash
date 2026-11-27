@@ -46,6 +46,7 @@ class Dashboard:
         self.views: dict[str, AgentView] = {}
         self.progress: dict[str, Progress] = {}
         self.default_sha = ""
+        self.default_ref = ""  # set by refresh_git
         self.show_hidden = False
         self.filter = ""
         self.no_hooks_after = 15.0
@@ -105,13 +106,13 @@ class Dashboard:
             self.refresh_runtime()
             with self._lock:
                 views = list(self.views.values())
-        self.ws.fill_git(views)
+        self.default_ref = self.ws.compare_ref()  # the local default branch, or origin's copy when that is ahead
+        self.ws.fill_git(views, self.default_ref)
         with self._lock:
             for v in views:
                 self._git[v.name] = {k: getattr(v, k) for k in GIT_FIELDS}
                 v.merge_state = merge_state(v) if v.branch else "clean"
-        self.default_sha = gitutil.out(["rev-parse", "--short", self.ws.default_branch], self.ws.repo.main_root,
-                                       check=False)
+        self.default_sha = gitutil.out(["rev-parse", "--short", self.default_ref], self.ws.repo.main_root, check=False)
         self.git_refreshed = time.monotonic()
         self.git_wanted = False
         self._apply_conflicts(git=True)

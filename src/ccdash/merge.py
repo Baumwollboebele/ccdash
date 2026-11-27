@@ -64,6 +64,10 @@ def main_checkout_problem(ws) -> str | None:
         return "a merge is already in progress in the main checkout"
     if gitutil.out(["status", "--porcelain", "--untracked-files=no"], root, check=False):
         return "the main checkout has uncommitted changes"
+    ref = ws.compare_ref()
+    if ref != default:  # agents start from origin's newer copy: merging one here would drag those commits in
+        n = gitutil.out(["rev-list", "--count", f"{default}..{ref}"], root, check=False) or "some"
+        return f"the main checkout is behind {ref} by {n} commit(s); pull first"
     return None
 
 
@@ -194,7 +198,7 @@ def menu(ws, v, dashboard) -> Menu:
 
 # -- diff -----------------------------------------------------------------------------------
 def has_diff(ws, branch: str) -> bool:
-    return gitutil.git(["diff", "--quiet", f"{ws.default_branch}...{branch}"], ws.repo.main_root,
+    return gitutil.git(["diff", "--quiet", f"{ws.compare_ref()}...{branch}"], ws.repo.main_root,
                        check=False).returncode == 1
 
 
@@ -218,4 +222,4 @@ def diff_command(ws, branch: str) -> tuple[list[str], dict]:
         else:
             args += ["-c", "core.pager=more"]
             color = ["--no-color"]  # more does not understand color codes
-    return [*args, "--paginate", "diff", *color, f"{ws.default_branch}...{branch}"], env
+    return [*args, "--paginate", "diff", *color, f"{ws.compare_ref()}...{branch}"], env
