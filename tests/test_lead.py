@@ -50,6 +50,22 @@ def test_the_lead_may_run_only_harmless_commands_without_asking():
     assert "--allowedTools" not in claude_args("worker", session_id="s", prompt="x")
 
 
+def test_the_leads_answers_are_messages_to_you():
+    from ccdash import comms
+    from ccdash.messaging import MessageLog
+
+    log = MessageLog()
+    log.apply({"agent": "lead", "event": "ccdash.message", "from": "you", "to": "lead", "text": "Add CSV export", "t": 1.0})
+    log.apply({"agent": "lead", "event": "Stop", "text": "I started csv-export.\nIt owns src/reports.", "t": 9.0})
+    log.apply({"agent": "csv-export", "event": "Stop", "text": "DONE: export works", "t": 20.0})
+    log.apply({"agent": "lead", "event": "Stop", "text": "  ", "t": 21.0})
+    assert [(m.sender, m.to, m.first_line) for m in log.items] == [
+        ("you", "lead", "Add CSV export"), ("lead", "you", "I started csv-export.")], "only the lead answers you"
+    threads = comms.build_threads(log.items, now=30.0)
+    assert len(threads) == 1 and [m.sender for m in threads[0].messages] == ["you", "lead"], "one conversation"
+    assert threads[0].pair_label == "you → lead"
+
+
 def test_lead_is_a_reserved_name(repo, ws):
     with pytest.raises(WorkspaceError, match="reserved"):
         ws.new_agent("anything", name="lead")
@@ -88,9 +104,15 @@ def test_lead_turns_a_request_into_an_agent_that_shows_up(repo, ws, set_scenario
     assert d.counts()["agents"] == 1, "the header counts the agents, not their coordinator"
     wait_for(lambda: "[from lead] Use the existing ReportWriter" in screen(ws, "csv-export"), timeout=10,
              message="what the lead sends says it is from the lead, not from you")
-    wait_for(lambda: d.refresh_events() is not None and
-             [(m.sender, m.to, m.kind) for m in d.messages.items] == [("lead", "csv-export", "agent")], timeout=5,
+    def log():
+        d.refresh_events()
+        return [(m.sender, m.to, m.first_line) for m in d.messages.items]
+
+    wait_for(lambda: ("lead", "csv-export", "Use the existing ReportWriter") in log(), timeout=5,
              message="and the Messages panel shows lead → csv-export")
+    assert log()[0] == ("you", "lead", "Add CSV export to the reports page"), "what you asked is in Messages"
+    wait_for(lambda: ("lead", "you", "Started csv-export for the CSV export.") in log(), timeout=8,
+             message="and so is the lead's answer: you never have to attach to read it")
 
     assert lead.tell(ws, "Also add a dark mode toggle", dashboard=d) == "Told the lead."
     wait_for(lambda: "[from the user] Also add a dark mode toggle" in screen(ws, "lead"), timeout=8,

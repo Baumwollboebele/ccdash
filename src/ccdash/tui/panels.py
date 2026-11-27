@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import textwrap
 import time
 
 from rich.text import Text
@@ -54,8 +55,8 @@ class DetailsPanel(Static):
             return
         t = Text()
         if v.role == "lead":
-            kv(t, "Role", "coordinator: it turns what you ask for into agents")
-            kv(t, "Works in", "the main checkout; it has no worktree or branch and edits nothing")
+            kv(t, "Role", "coordinator: turns requests into agents")
+            kv(t, "Works in", "the main checkout, no branch of its own")
             if activity is not None and activity.last:
                 last = shimmer(activity.last, frame) if animate and v.status == "working" else Text(activity.last)
                 last.append(f"  {_ago(activity.last_ts)}", style=DIM)
@@ -68,12 +69,8 @@ class DetailsPanel(Static):
             elif not v.alive:
                 t.append("Not running. l starts it again with what you tell it; r resumes it as it was.\n", style=DIM)
             else:
-                t.append("l tells it what you want · a attaches for a conversation · Ctrl+] comes back\n", style=DIM)
-            if peek is not None:
-                t.append("── live output ──\n", style=DIM)
-                height = max(3, (self.size.height or 20) - len(t.plain.splitlines()) - 1)
-                for line in (peek or ["(no output yet)"])[-height:]:
-                    t.append(line[:200] + "\n", style="default")
+                t.append("l talks to it · a attaches · p shows its screen\n", style=DIM)
+            self._tail(t, activity, peek)
             self.last_text = t
             self.update(t)
             return
@@ -121,13 +118,31 @@ class DetailsPanel(Static):
                      "are not set up: see the host log under .git/ccdash/logs.\n", style="yellow")
         if v.status == "needs_input":
             t.append("Waiting for you: attach (a) to answer. Messages you send now are queued.\n", style="yellow")
-        if peek is not None:
-            t.append("── live output ──\n", style=DIM)
-            height = max(3, (self.size.height or 20) - len(t.plain.splitlines()) - 1)
-            for line in (peek or ["(no output yet)"])[-height:]:
-                t.append(line[:200] + "\n", style="default")
+        self._tail(t, activity, peek)
         self.last_text = t
         self.update(t)
+
+    def _tail(self, t: Text, activity, peek: list[str] | None) -> None:
+        """What fills the rest of the panel: the agent's screen while peek is on, otherwise what it
+        said last, so that an answer can be read without attaching."""
+        room = max(3, (self.size.height or 20) - len(t.plain.splitlines()) - 1)
+        if peek is not None:
+            t.append("── live output ──\n", style=DIM)
+            for line in (peek or ["(no output yet)"])[-room:]:
+                t.append(line[:200] + "\n", style="default")
+            return
+        said = (getattr(activity, "last_message", "") or "").strip()
+        if not said:
+            return
+        width = max(20, (self.size.width or 56) - 1)
+        lines: list[str] = []
+        for para in said.splitlines():
+            lines += textwrap.wrap(para, width) or [""]
+        t.append("── said last ──\n", style=DIM)
+        for line in lines[:room]:
+            t.append(line + "\n")
+        if len(lines) > room:
+            t.append("… more: p shows its screen, a attaches", style=DIM)
 
 
 class MessagesPanel(OptionList):

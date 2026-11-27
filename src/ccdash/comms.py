@@ -116,6 +116,15 @@ def build_threads(messages, now: float | None = None) -> list[Thread]:
             t.messages.append(m)
             t.files |= mfiles
             continue
+        if m.to == "you":  # the lead's answer belongs to the conversation you started with it
+            pair = frozenset({"you", m.sender})
+            t = open_pair.get(pair)
+            if t is None or m.t - t.last_t > SILENCE:
+                t = Thread("you", pair, "you", m.sender, [], set())
+                threads.append(t)
+                open_pair[pair] = t
+            t.messages.append(m)
+            continue
         if m.to in ("all", "*"):
             t = Thread("broadcast", frozenset({m.sender, "all"}), m.sender, "all", [m], mfiles,
                        recipients=list(m.recipients))

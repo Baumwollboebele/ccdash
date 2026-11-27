@@ -33,7 +33,7 @@ Pushed to the private repo https://github.com/Baumwollboebele/ccdash, branch `ma
 ### 1. Manual checks on Windows (owed since Phases 1 to 4)
 
 - **Terminal survival:** start `cc` from PowerShell in Windows Terminal and in the VS Code terminal, start 3 agents, close the window, reopen `cc`; all 3 must still run.
-- **Attach:** `a` or Enter on a running agent, type into it, Ctrl+] detaches; the terminal must come back clean.
+- **Attach:** `a` or Enter on a running agent, type into it, F12 detaches; the terminal must come back clean. On the first real use attaching worked, but the way back could not be found: on a German keyboard the detach character is on Ctrl++, not Ctrl+]. F12 was added for that and is tested only as a character sequence (`attach.DetachScanner`), not on a real console yet: check that F12 and Ctrl++ both come back.
 - **Diff:** `d` on an agent with commits; the pager must take the terminal and `q` must bring the dashboard back.
 - **Real-Claude check:** `.venv\Scripts\python.exe scripts\real_claude_check.py <a repo you trusted in Claude Code>` (uses Haiku, a few cents of quota).
 - **Pull requests:** `gh` is not installed on the second machine, so "open PR" and the `PR #n` state ran only against the fake `gh`. Try `m` then `p` once where `gh auth status` works.
@@ -107,6 +107,10 @@ Each extra works against a fake that follows the documentation (`docs/findings.m
 - **`open_in = "vscode"`** attaches in place: VS Code has no command line for a terminal tab, and `code --new-window` would open an empty window.
 - **Messages that cannot be delivered** raise "cannot type into ..." instead of being logged as sent.
 - **The lead** has no worktree and no branch, is pinned on top, and does not count towards `max_agents`. It may start, list, peek at and message agents without asking; stopping, deleting, merging and pushing stay with the user. `lead` is a reserved name.
+- **Selection:** the agents table hides DataTable's cursor, which makes DataTable ignore the arrow keys and clicks, so the table moves the selection itself (arrows, `j`/`k`, Home/End, Tab, click). Tab no longer leaves the table.
+- **Views are advertised** on the details panel's lower edge (`g network · f file map · c comms`).
+- **Attach:** F12 detaches on every keyboard; the hint names the key for the current layout (`attach.detach_key_name`). The first attach of a dashboard run explains itself in a modal, because nothing on the agent's screen shows the way back.
+- **Seeing output without attaching:** peek leaves out Claude Code's input box (`runner.strip_prompt_box`); with peek off the details panel shows what the agent said last; the lead's answers are messages `lead → you`.
 - **Measured against origin when it is ahead:** ahead/behind, changed files, merged and conflict predictions use `repo.compare_ref`. A local merge refuses while the main checkout is behind origin.
 
 ## Pitfalls seen in this environment

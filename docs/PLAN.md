@@ -103,8 +103,9 @@ One screen, four panels: the agent table on top, details of the selected agent o
 | `n` | New agent | By hand. Modal: task (required), name (prefilled slug), base `main`/`HEAD`, model, permission mode |
 | `s` | Stop selected | Graceful, keeps worktree and branch |
 | `r` | Restart / resume | Resumes the last conversation in the same worktree |
-| `a` / `Enter` | Attach | TUI suspends, the agent takes the terminal; detach with Ctrl+\] on Windows, or in tmux with (`Ctrl-b d`) returns |
-| `p` | Peek | Toggles live output in the details panel (last 30 lines of the pane) |
+| `↑` `↓` / `Tab` | Select | Move through the agents; a click selects too |
+| `a` / `Enter` | Attach | TUI suspends, the agent's own session takes the terminal. F12 comes back on Windows (also the key that types the character 0x1D: Ctrl+\] on a US keyboard, Ctrl++ on a German one); `Ctrl-b d` under tmux. The first attach says so before the screen switches |
+| `p` | Peek | Toggles the agent's screen in the details panel, without Claude's input box. With peek off, the panel shows what the agent said last |
 | `t` | Talk to agent | One-line message to the selected agent |
 | `b` | Broadcast | One-line message to every running agent |
 | `m` | Merge menu | Rebase via agent, merge locally, open PR |
@@ -258,6 +259,7 @@ Added after Phase 5, from the first real use: setting up every agent by hand is 
 - **How it delegates.** It runs `ccdash new "<task>" --name <name>`, the same command as `cc "<task>"`. Its prompt (`src/ccdash/lead.md`) explains how to write a brief, to give each agent different files, and what stays with you: merging, pull requests, stopping and deleting.
 - **Permissions.** The lead may run `ccdash new`, `ls`, `peek`, `send` and `broadcast` without a permission prompt (rules passed with `--allowedTools`, for the Bash and PowerShell tools). Everything else follows your normal permission mode.
 - **Reporting.** Agents started while a lead runs are told to send it one line when they are done or blocked.
+- **Its answers.** What the lead says at the end of a turn appears in the Messages panel as `lead → you`, with a toast, and in its details panel. You never have to attach to read a reply. What it sends to agents with `ccdash send` arrives as `[from lead] …`.
 - **Stopped lead.** The next `l` resumes its conversation with the new request as the prompt. `r` resumes it as it was.
 - **Safety.** Deleting the lead only ends its session and hides the record. Independently of that, removing a worktree refuses the main checkout whatever a record says.
 
@@ -275,7 +277,7 @@ ccdash creates the worktree itself and runs plain interactive `claude` inside it
 | Survives closing the TUI | Yes: the host is started through a short-lived intermediate process with `CREATE_NO_WINDOW` + `CREATE_NEW_PROCESS_GROUP` (+ `CREATE_BREAKAWAY_FROM_JOB` when allowed), so its parent is gone and a process-tree kill of the terminal cannot reach it. It runs on the base interpreter (`-I -S`), not the venv launcher, so it is one process | Yes |
 | Peek | Host feeds the ConPTY output into a VT screen emulator and keeps the rendered screen plus 2,000 lines of scrollback, served over a named pipe `\\.\pipe\ccdash-<repo>-<name>`. Claude redraws in place, so raw output lines are not readable. The emulator dependency is still to be approved, see findings | `tmux capture-pane` |
 | Type into the agent (stop, messages) | Write to the host's pipe, which writes to the ConPTY input | `tmux send-keys` |
-| Attach | `cc attach <name>`: puts the PowerShell console in raw VT mode and proxies keys and output through the pipe; `Ctrl+]` detaches. ConPTY output turns on win32-input-mode (`ESC[?9001h`) and focus events (`ESC[?1004h`) in the real terminal, so detach must turn them off again and restore the console mode | `tmux attach`; `Ctrl-b d` detaches |
+| Attach | `cc attach <name>`: puts the PowerShell console in raw VT mode and proxies keys and output through the pipe; F12 detaches, and so does the 0x1D character (`Ctrl+]` on a US layout, `Ctrl++` on a German one, where `]` needs AltGr). The window title names the keys. ConPTY output turns on win32-input-mode (`ESC[?9001h`) and focus events (`ESC[?1004h`) in the real terminal, so detach must turn them off again and restore the console mode | `tmux attach`; `Ctrl-b d` detaches |
 | Liveness | Host PID + the `claude` child PID in the agent record | `tmux has-session` |
 
 On Windows the step lists below read "host" wherever they say "tmux session". From inside the TUI, attach suspends the TUI and runs the same proxy in the current console.

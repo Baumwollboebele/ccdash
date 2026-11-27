@@ -1,18 +1,75 @@
 """`cc attach <name>` on Windows: proxy the console to an agent's host.
 
 The console is put in raw VT mode; keys go to the agent's ConPTY through the host
-pipe and its output comes back. Ctrl+] detaches. The agent keeps running.
+pipe and its output comes back. F12 detaches, and so does the key that types the
+character 0x1D (Ctrl+] on a US keyboard, Ctrl++ on a German one). The agent keeps running.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import sys
 import threading
 import time
 from typing import Callable
 
-DETACH_KEY = "\x1d"  # Ctrl+]
+DETACH_KEY = "\x1d"  # the character Ctrl+] types on a US keyboard; on a German one it is Ctrl++
+_F12 = re.compile(r"\x1b\[24(?:;\d+)?~")  # F12 (with any modifier) as a VT sequence: the same key on every layout
+_F12_PARTS = ("\x1b", "\x1b[", "\x1b[2", "\x1b[24", "\x1b[24;")
+
+
+def detach_key_name() -> str:
+    """The key that types the detach character on this keyboard layout: `Ctrl+]` on a US
+    layout, `Ctrl++` on a German one (where `]` needs AltGr and Ctrl+AltGr+9 types nothing)."""
+    if sys.platform != "win32":
+        return "Ctrl+]"
+    try:
+        import ctypes
+
+        user32 = ctypes.WinDLL("user32")
+        user32.VkKeyScanW.argtypes = [ctypes.c_wchar]
+        user32.VkKeyScanW.restype = ctypes.c_short
+        user32.GetKeyNameTextW.argtypes = [ctypes.c_long, ctypes.c_wchar_p, ctypes.c_int]
+        found = user32.VkKeyScanW(DETACH_KEY)
+        vk, shift = found & 0xFF, (found >> 8) & 0xFF
+        if found == -1 or shift != 2:  # not typed by Ctrl plus one key here
+            return "Ctrl+]"
+        name = ctypes.create_unicode_buffer(32)
+        user32.GetKeyNameTextW(user32.MapVirtualKeyW(vk, 0) << 16, name, 32)
+        return f"Ctrl+{name.value}" if name.value else "Ctrl+]"
+    except Exception:  # noqa: BLE001  (a hint must never break attach)
+        return "Ctrl+]"
+
+
+def detach_hint() -> str:
+    return f"F12 or {detach_key_name()}"
+
+
+class DetachScanner:
+    """Finds the detach keys in what you type. F12 arrives as several characters, which may come in
+    two reads: a tail that could be the start of F12 is held back until the next call says what follows."""
+
+    def __init__(self):
+        self.held = ""
+
+    def feed(self, text: str) -> tuple[str, bool]:
+        """(what to pass on to the agent, whether to detach now). An empty `text` releases what was held."""
+        text, self.held = self.held + text, ""
+        if DETACH_KEY in text:
+            return text.split(DETACH_KEY, 1)[0], True
+        m = _F12.search(text)
+        if m:
+            return text[: m.start()], True
+        for part in reversed(_F12_PARTS):  # longest first
+            if text.endswith(part):
+                self.held = part
+                return text[: -len(part)], False
+        return text, False
+
+    def flush(self) -> str:
+        text, self.held = self.held, ""
+        return text
 
 
 class AttachSession:
@@ -150,9 +207,10 @@ def run_console(info: dict, title: str = "") -> int:
     k32.SetConsoleCP(65001)
     k32.SetConsoleOutputCP(65001)
     write("\x1b[?1049h")  # alternate screen: detaching gives the shell its screen back
-    if title:
-        write(f"\x1b]0;cc · {title}\x07")
+    if title:  # the agent's screen fills the terminal, so the way back is in the window title
+        write(f"\x1b]0;cc · {title} · {detach_hint()} goes back\x07")
     session = None
+    scanner = DetachScanner()
     try:
         session = AttachSession(info, rows, cols, on_output=write, on_exit=on_exit)
 
@@ -171,6 +229,9 @@ def run_console(info: dict, title: str = "") -> int:
         pending_high = None
         while not done.is_set():
             if k32.WaitForSingleObject(hin, 100) != 0:
+                held = scanner.flush()  # a lone Esc is not the start of F12 after all
+                if held:
+                    session.send_input(held.encode("utf-8"))
                 continue
             if not k32.ReadConsoleInputW(hin, buf, 64, ctypes.byref(n)):
                 break
@@ -190,14 +251,13 @@ def run_console(info: dict, title: str = "") -> int:
                     ch = (pending_high + ch).encode("utf-16", "surrogatepass").decode("utf-16")
                     pending_high = None
                 chars.append(ch * max(1, rec.Event.KeyEvent.wRepeatCount))
-            text = "".join(chars)
-            if DETACH_KEY in text:
-                before = text.split(DETACH_KEY, 1)[0]
-                if before:
-                    session.send_input(before.encode("utf-8"))
-                break
+            if not chars:
+                continue
+            text, detach = scanner.feed("".join(chars))
             if text:
                 session.send_input(text.encode("utf-8"))
+            if detach:
+                break
     finally:
         if session is not None:
             session.detach()

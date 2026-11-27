@@ -13,6 +13,7 @@ import json
 import time
 from dataclasses import dataclass, field
 
+from .lead import LEAD
 from .state import FileLock, atomic_write_json
 
 USER_PREFIX = "[from the user]"
@@ -96,6 +97,11 @@ class MessageLog:
                     return True
             # sent by a session ccdash does not track (or the send event was lost): still show it
             self._add(Message(t=t, sender=sender or "?", to=receiver or "?", text=text, delivered=True))
+            return True
+        if event == "Stop" and line.get("agent") == LEAD and (line.get("text") or "").strip():
+            # what the lead says at the end of a turn is its answer to you: without this you would
+            # tell it something with l and never see a reply unless you attach
+            self._add(Message(t=t, sender=LEAD, to="you", text=line["text"], delivered=True))
             return True
         if event == "ccdash.message":
             sender = line.get("from", "you")  # you, ccdash, or an agent that ran `ccdash send` (the lead)

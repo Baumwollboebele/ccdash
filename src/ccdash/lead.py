@@ -13,6 +13,7 @@ merging and pushing still ask you (see runner.allow_patterns).
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 LEAD = "lead"
@@ -43,5 +44,8 @@ def tell(ws, text: str | None = None, dashboard=None) -> str:
         res = messaging.send_from_user(ws, LEAD, text, dashboard=dashboard)
         return "Told the lead." if res.startswith("sent") else res  # or: queued behind a permission dialog
     ws.start_lead(text or None)
+    if text:  # it went in with the prompt, not through messaging: log it, so Messages shows what you asked
+        ws.state.append_event({"agent": LEAD, "event": "ccdash.message", "from": "you", "to": LEAD, "text": text,
+                               "queued": False, "t": time.time()})
     return "Started the lead with your request." if text else \
         "Started the lead. Tell it what you want with l, or attach with a."

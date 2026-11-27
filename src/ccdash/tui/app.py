@@ -68,6 +68,7 @@ class CCDashApp(App):
         self.ws, self.dash = self.spaces[0]
         self._tab_hint_shown = False
         self.attach_fn = attach_fn
+        self._attach_explained = attach_fn is not None  # the first real attach explains itself (see action_attach)
         self.external_fn = external_fn  # tests: receives the argv of a pager instead of running it
         self._demo_rows: list | None = None
         self._refreshing = self._refresh_again = self._git_refreshing = self._git_again = False
@@ -323,7 +324,12 @@ class CCDashApp(App):
     def _update_peek(self) -> None:
         name = self.selected_name()
         v = self.dash.get(name) if name else None
-        self.peek_lines = self.ws.peek(name, lines=30) if (self.peek_on and v is not None and v.alive) else None
+        if self.peek_on and v is not None and v.alive:
+            from ..runner import strip_prompt_box
+
+            self.peek_lines = strip_prompt_box(self.ws.peek(name, lines=60))  # what it wrote, not its input box
+        else:
+            self.peek_lines = None
 
     # -- rendering ----------------------------------------------------------------------
     def render_all(self) -> None:
@@ -407,6 +413,8 @@ class CCDashApp(App):
             for m in items[self._seen_messages:]:
                 for to in (m.recipients if m.to in ("all", "*") else [m.to]):
                     self.add_flight(m.sender, to)
+                if m.to == "you":  # the lead answered: say so, the answer itself is in Messages and in its details
+                    self.notify(m.first_line[:240], title=f"{m.sender} answered", timeout=8)
         self._seen_messages = len(items)
 
     def add_flight(self, sender: str, to: str) -> None:
@@ -695,14 +703,38 @@ class CCDashApp(App):
                 self._tab_hint_shown = True
                 self.notify(terminals.VSCODE_NOTE.format(name=v.name) if mode == "vscode" else
                             "Windows Terminal (wt.exe) was not found; attaching here.", timeout=10)
+        if self._attach_explained:
+            self._attach(v.name)
+            return
+        # The agent's screen takes over the whole terminal and shows no sign of the dashboard: say
+        # once, before it happens, what this is and which key comes back.
+        hint = self.detach_hint()
+        note = (f"This hands the terminal to {v.name}'s own Claude Code session. The dashboard waits behind it, "
+                f"and the agent keeps running either way.\n\nTo come back: {hint}.")
+        modal = ChoiceModal(f"Attach to {v.name}", [("enter", "attach", f"attach · {hint} comes back")], note=note,
+                            modal_id="attach")
+        self.push_screen(modal, lambda answer: answer == "attach" and self._attach(v.name, explained=True))
+
+    def detach_hint(self) -> str:
+        """The keys that leave an attached session, for this runner and this keyboard."""
+        kind = self.ws.runner.kind
+        if kind == "winpty":
+            from ..attach import detach_hint
+
+            return detach_hint()
+        return "Ctrl-b d" if kind == "tmux" else "← on an empty prompt, or Ctrl+Z"
+
+    def _attach(self, name: str, explained: bool = False) -> None:
+        if explained:
+            self._attach_explained = True
         fn = self.attach_fn or self.ws.attach
         driver = getattr(self, "_driver", None)
         if self.attach_fn is None and driver is not None and driver.can_suspend:
             with self.suspend():
-                print(f"\x1b[2mattached to {v.name} · Ctrl+] detaches\x1b[0m", flush=True)
-                fn(v.name)
+                print(f"\x1b[2mattached to {name} · {self.detach_hint()} comes back\x1b[0m", flush=True)
+                fn(name)
         else:
-            fn(v.name)
+            fn(name)
         self.request_refresh()
 
     def action_delete(self) -> None:

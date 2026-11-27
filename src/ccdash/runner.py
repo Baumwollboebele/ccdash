@@ -104,6 +104,29 @@ def agent_env(state: State, name: str, worktree: str | None = None, path_prepend
     return env
 
 
+def _is_rule(line: str) -> bool:
+    s = line.strip()
+    return len(s) >= 20 and s.count("─") >= 0.6 * len(s)
+
+
+def strip_prompt_box(lines: list[str]) -> list[str]:
+    """An agent's screen without Claude Code's input box at the bottom (a rule, the `❯` line,
+    a rule, the status line). In a small panel those empty lines are all that fits, and the
+    answer above them stays out of sight. A screen that ends in anything else, such as a
+    permission dialog, is returned as it is."""
+    tail = range(len(lines) - 1, max(-1, len(lines) - 16), -1)
+    rules = [i for i in tail if _is_rule(lines[i])]
+    if len(rules) < 2:
+        return lines
+    lower, upper = rules[0], rules[1]
+    if not any(lines[i].lstrip().startswith(("❯", ">")) for i in range(upper + 1, lower)):
+        return lines
+    out = lines[:upper]
+    while out and not out[-1].strip():
+        out.pop()
+    return out
+
+
 def claude_config_dir() -> Path:
     return Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
 
