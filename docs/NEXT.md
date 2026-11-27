@@ -24,7 +24,7 @@ If a git remote exists, push after each commit.
 | 3: look and feel | `3338e55` | Done. Screenshots: `docs/screenshots/phase3*.svg` |
 | 4: conflicts and merge | `97d710e` | Done. Screenshots: `docs/screenshots/phase4*.svg` |
 | 5: extras | `86a75d2` | Done, all off by default. Tested against fakes only (see below) |
-| After: first real use | `41d1175` and the lead commit | Agents are measured against origin's default branch when it is ahead; the lead (`l`, `cc lead`) |
+| After: first real use | `41d1175`, `9eeabcd` | Agents are measured against origin's default branch when it is ahead; the lead (`l`, `cc lead`) |
 
 Pushed to the private repo https://github.com/Baumwollboebele/ccdash, branch `main`. Push after each commit with `git push`.
 
