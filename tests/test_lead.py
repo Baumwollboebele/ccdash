@@ -66,6 +66,7 @@ def test_removing_a_worktree_never_touches_the_main_checkout(repo, ws):
 @windows_runner
 def test_lead_turns_a_request_into_an_agent_that_shows_up(repo, ws, set_scenario):
     set_scenario({"lead": [{"run": 'ccdash new "Add CSV export to the reports page" --name csv-export'},
+                           {"run": 'ccdash send csv-export "Use the existing ReportWriter"'},
                            {"say": "Started csv-export for the CSV export."}], "*": []})
     assert lead.tell(ws, "Add CSV export to the reports page") == "Started the lead with your request."
     rec = ws.lead()
@@ -85,6 +86,11 @@ def test_lead_turns_a_request_into_an_agent_that_shows_up(repo, ws, set_scenario
     assert [v.name for v in d.sorted_views()] == ["lead", "csv-export"], "the lead stays on top"
     assert d.get("csv-export").branch == "cc/csv-export" and d.get("lead").role == "lead"
     assert d.counts()["agents"] == 1, "the header counts the agents, not their coordinator"
+    wait_for(lambda: "[from lead] Use the existing ReportWriter" in screen(ws, "csv-export"), timeout=10,
+             message="what the lead sends says it is from the lead, not from you")
+    wait_for(lambda: d.refresh_events() is not None and
+             [(m.sender, m.to, m.kind) for m in d.messages.items] == [("lead", "csv-export", "agent")], timeout=5,
+             message="and the Messages panel shows lead → csv-export")
 
     assert lead.tell(ws, "Also add a dark mode toggle", dashboard=d) == "Told the lead."
     wait_for(lambda: "[from the user] Also add a dark mode toggle" in screen(ws, "lead"), timeout=8,

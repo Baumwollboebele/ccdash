@@ -16,7 +16,7 @@ $agents
 2. Stay inside your scope. If you need to change a file another agent works on, message that agent first and wait for its answer.
 3. Before you change a shared interface ($shared), message the agents that depend on it: what changes and why.
 4. Answer messages from other agents briefly. Reply "ok" or "agreed" when you accept a proposal.
-5. Lines that start with `[from the user]` are instructions from the user, typed in through ccdash. Lines that start with `[ccdash]` are automatic notices, for example that another branch landed on `$default_branch`.
+5. Lines that start with `[from the user]` are instructions from the user, typed in through ccdash. Lines that start with `[from lead]` come from the user's coordinator and count the same. Lines that start with `[ccdash]` are automatic notices, for example that another branch landed on `$default_branch`.
 6. When you are done, run the tests, commit everything, and end your last message with a line that starts with `DONE:` and a one-line summary.
 
 ## Your task

@@ -135,11 +135,18 @@ def cmd_adopt(ns) -> int:
     return 0
 
 
+def _sender() -> str:
+    """Who is typing: you, or the agent in whose session this command runs (the lead uses `ccdash send`)."""
+    import os
+
+    return os.environ.get("CCDASH_AGENT") or "you"
+
+
 def cmd_send(ns) -> int:
     from . import messaging
 
     ws = _ws()
-    res = messaging.send_from_user(ws, ns.name, " ".join(ns.text))
+    res = messaging.send_from_user(ws, ns.name, " ".join(ns.text), sender=_sender())
     _out(res)
     return 0
 
@@ -148,7 +155,9 @@ def cmd_broadcast(ns) -> int:
     from . import messaging
 
     ws = _ws()
-    for line in messaging.broadcast_from_user(ws, " ".join(ns.text)):
+    sender = _sender()
+    for line in messaging.broadcast_from_user(ws, " ".join(ns.text), sender=sender,
+                                              exclude=None if sender == "you" else {sender}):
         _out(line)
     return 0
 

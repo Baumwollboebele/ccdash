@@ -30,6 +30,12 @@ MAIN_ACTIONS = {"lead", "new", "stop", "restart", "attach", "peek", "talk", "bro
                 "filter", "network", "filemap", "comms", "claim", "toggle_hidden", "adopt", "next_repo", "help",
                 "quit_dash"}
 VIEW_TITLES = {"network": "Network", "filemap": "File map"}
+VIEW_KEYS = (("g", "network", "network"), ("f", "filemap", "file map"), ("c", "comms", "comms"))
+
+
+def views_hint(mode: str) -> str:
+    """The panel's subtitle: the other views are one key away, and the same key comes back."""
+    return " · ".join(f"{key} {'details' if view == mode else label}" for key, view, label in VIEW_KEYS)
 
 FOOTER_KEYS = [("l", "lead"), ("n", "new"), ("s", "stop"), ("r", "restart"), ("a", "attach"), ("p", "peek"),
                ("t", "talk"), ("b", "broadcast"), ("m", "merge"), ("d", "diff"), ("x", "delete"), ("?", "help"),
@@ -89,6 +95,7 @@ class CCDashApp(App):
         with Horizontal(id="middle"):
             with Container(id="details-panel", classes="panel") as p:
                 p.border_title = "Details"
+                p.border_subtitle = views_hint("details")
                 yield DetailsPanel(id="details")
                 yield NetworkView(id="network")
                 yield FileMapView(id="filemap")
@@ -466,7 +473,9 @@ class CCDashApp(App):
         self.network.display = mode == "network"
         self.filemap.display = mode == "filemap"
         self.query_one("#details", DetailsPanel).display = mode == "details"
-        self.query_one("#details-panel").border_title = VIEW_TITLES.get(mode) or self.selected_name() or "Details"
+        panel = self.query_one("#details-panel")
+        panel.border_title = VIEW_TITLES.get(mode) or self.selected_name() or "Details"
+        panel.border_subtitle = views_hint(mode)
         self.render_all()
 
     def action_network(self) -> None:

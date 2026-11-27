@@ -225,6 +225,10 @@ class NetworkView(Surface):
         labels: dict[str, list[Text]] = {}
         for v in agents:
             glyph = spinner_glyph() if animate and v.status == "working" else STATUS_GLYPH.get(v.status, " ")
+            if not v.branch:  # the lead: a coordinator, not a branch
+                labels[v.name] = [Text.assemble((glyph + " ", STATUS_STYLE.get(v.status, "default")),
+                                                (v.name, f"bold {ACCENT}"))]
+                continue
             labels[v.name] = [Text.assemble((glyph + " ", STATUS_STYLE.get(v.status, "default")), (v.name, "bold")),
                               branch_bar(v.ahead, v.behind)]
         hub = [Text(f"◆ {default}", style=f"bold {ACCENT}")]
@@ -238,6 +242,8 @@ class NetworkView(Surface):
         main = _anchor(hub_rect, hub)
         pos = {n: _anchor(rects[n], labels[n]) for n in labels}
         for v in agents:  # every branch hangs off the default branch
+            if not v.branch:
+                continue
             if frozenset({v.name, default}) in self._edges:
                 canvas.line(*pos[v.name], *main, style="red", rank=2)
             else:

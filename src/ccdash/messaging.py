@@ -98,8 +98,9 @@ class MessageLog:
             self._add(Message(t=t, sender=sender or "?", to=receiver or "?", text=text, delivered=True))
             return True
         if event == "ccdash.message":
-            self._add(Message(t=t, sender=line.get("from", "you"), to=line.get("to", "?"), text=line.get("text", ""),
-                              kind="you" if line.get("from") == "you" else "ccdash", delivered=not line.get("queued"),
+            sender = line.get("from", "you")  # you, ccdash, or an agent that ran `ccdash send` (the lead)
+            self._add(Message(t=t, sender=sender, to=line.get("to", "?"), text=line.get("text", ""),
+                              kind=sender if sender in ("you", "ccdash") else "agent", delivered=not line.get("queued"),
                               queued=bool(line.get("queued")), recipients=line.get("recipients", [])))
             return True
         if event == "ccdash.delivered":
@@ -158,8 +159,7 @@ def _send(ws, name: str, text: str, sender: str, d) -> str:
         raise WorkspaceError(f"no agent named {name!r}")
     if not v.alive:
         raise WorkspaceError(f"{name} is not running; restart it first (r)")
-    prefix = USER_PREFIX if sender == "you" else CCDASH_PREFIX
-    typed = f"{prefix} {text}"
+    typed = f"{prefix_for(sender)} {text}"
     if v.status == "needs_input":
         _outbox_edit(ws, lambda items: items + [{"to": name, "typed": typed, "text": text, "from": sender,
                                                  "t": time.time()}])
@@ -174,15 +174,23 @@ def _cannot_type(name: str):
                           f"session, or it just exited). Attach to it instead.")
 
 
-def send_from_user(ws, name: str, text: str, dashboard=None) -> str:
+def prefix_for(sender: str) -> str:
+    """What a typed line starts with, so the agent knows who is talking: you, ccdash, or another
+    agent whose session ran `ccdash send` (the lead does)."""
+    if sender == "you":
+        return USER_PREFIX
+    return CCDASH_PREFIX if sender == "ccdash" else f"[from {sender}]"
+
+
+def send_from_user(ws, name: str, text: str, dashboard=None, sender: str = "you") -> str:
     text = one_line(text)
     if not text:
         return "nothing to send"
     d = _dashboard(ws, dashboard)
-    res = _send(ws, name, text, "you", d)
+    res = _send(ws, name, text, sender, d)
     if res == "failed":
         raise _cannot_type(name)
-    ws.state.append_event({"agent": name, "event": "ccdash.message", "from": "you", "to": name, "text": text,
+    ws.state.append_event({"agent": name, "event": "ccdash.message", "from": sender, "to": name, "text": text,
                            "queued": res == "queued", "t": time.time()})
     return (f"{name} is waiting for a permission answer; message queued" if res == "queued" else f"sent to {name}")
 

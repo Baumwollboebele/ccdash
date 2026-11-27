@@ -191,6 +191,33 @@ async def test_network_view_fits_its_panel_with_every_agent(repo):
         assert all(name in app.network_text() for name in NAMES)
 
 
+async def test_the_lead_is_a_node_without_a_branch(repo):
+    lead = AgentView(name="lead", role="lead", status="idle", lifecycle="running", alive=True)
+    app = frozen_app(repo, [lead, view("csv-export", "working", ahead=2)], no_anim=True,
+                     messages=[msg("lead", "csv-export", "Use the existing ReportWriter", 30)])
+    async with app.run_test(size=SIZE) as pilot:
+        await pilot.press("g")
+        await ticks(pilot, 2)
+        net = app.network_text()
+        assert "lead" in net and net.count("+") == 1, "one branch bar: the agent's, none for the lead"
+        assert app.network.edge_width("lead", "csv-export") == 1, "but its messages are edges like any other"
+
+
+async def test_the_views_are_advertised_on_the_panel(repo):
+    """Nobody finds g, f and c in the help alone: the panel says they are there, and how to come back."""
+    app = frozen_app(repo, [view("a", "working")], no_anim=True)
+    async with app.run_test(size=SIZE) as pilot:
+        await ticks(pilot, 2)
+        panel = app.query_one("#details-panel")
+        assert str(panel.border_subtitle) == "g network · f file map · c comms"
+        await pilot.press("g")
+        await ticks(pilot, 2)
+        assert str(panel.border_subtitle) == "g details · f file map · c comms"
+        await pilot.press("f")
+        await ticks(pilot, 2)
+        assert str(panel.border_subtitle) == "g network · f details · c comms"
+
+
 async def test_network_nodes_keep_their_place_when_status_changes(repo):
     views = [view(n, "working") for n in NAMES]
     app = frozen_app(repo, views, no_anim=True)
