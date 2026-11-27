@@ -1,6 +1,7 @@
 """Render the dashboard with demo agents (fake claude) and save an SVG screenshot.
 
     python scripts/screenshot.py docs/screenshots/main.svg [--size 120x35] [--view comms|network|filemap]
+                                 [--select <agent>] [--keys l,m] [--type "text for an open input"]
 
 Builds a throwaway repo in a temp dir, so nothing touches a real repo or Claude.
 """
@@ -63,7 +64,11 @@ def demo_repo(base: Path) -> Path:
     return root
 
 
+REQUEST = "Build the reporting features: CSV export, dark mode, paginated orders, and fix the login redirect"
 SCENARIO = {
+    "lead": [{"sleep": 1.5},
+             {"say": "Started four agents: csv-export, login-redirect, dark-mode and api-pagination. csv-export and "
+                     "dark-mode both need src/ui/Toolbar.tsx, so I told them to agree on it first."}],
     "csv-export": [
         {"send": {"to": "dark-mode", "message": "Files: src/reports/** src/ui/Toolbar.tsx\nI'm adding ExportButton to src/ui/Toolbar.tsx"}},
         {"edit": "src/reports/export.ts", "text": "export const toCsv = () => '';\n"}, {"commit": "add writer"},
@@ -87,7 +92,9 @@ TASKS = [("csv-export", "Add CSV export to reports"), ("login-redirect", "Fix lo
          ("flaky-test", "Fix flaky settings test")]
 
 
-async def shoot(out: Path, size: tuple[int, int], view: str | None) -> None:
+async def shoot(out: Path, size: tuple[int, int], view: str | None, select: str = "csv-export", keys: tuple = (),
+                typed: str = "") -> None:
+    from ccdash import lead
     from ccdash.tui.app import CCDashApp
     from ccdash.workspace import Workspace
 
@@ -99,7 +106,7 @@ async def shoot(out: Path, size: tuple[int, int], view: str | None) -> None:
         os.environ["CCDASH_REDUCED_MOTION"] = "1"
         os.environ.setdefault("CCDASH_THEME", "dark-rgb")
         ws = Workspace.open(root)
-        ws.start_lead("Build the reporting features: CSV export, dark mode, paginated orders")
+        lead.tell(ws, REQUEST)
         for name, task in TASKS:
             ws.new_agent(task, name=name)
         # main moves on, so login-redirect conflicts with it
@@ -113,11 +120,17 @@ async def shoot(out: Path, size: tuple[int, int], view: str | None) -> None:
                 await app.refresh_now()
                 await pilot.pause(0.5)
                 await app.refresh_now()
+                app.select(select)
+                await pilot.pause(0.3)
                 if view:
                     await pilot.press({"comms": "c", "network": "g", "filemap": "f"}[view])
                     await pilot.pause(0.3)
-                app.select("csv-export")
-                await pilot.pause(0.3)
+                for key in keys:  # e.g. l for the "Tell the lead" line, m for the merge menu
+                    await pilot.press(key)
+                    await pilot.pause(1.5)
+                if typed:
+                    await pilot.press(*typed)
+                    await pilot.pause(0.3)
                 out.parent.mkdir(parents=True, exist_ok=True)
                 app.save_screenshot(filename=out.name, path=str(out.parent))
                 print(f"saved {out}")
@@ -136,9 +149,13 @@ def main() -> None:
     p.add_argument("out", type=Path)
     p.add_argument("--size", default="120x35")
     p.add_argument("--view")
+    p.add_argument("--select", default="csv-export", help="the agent whose row is selected")
+    p.add_argument("--keys", default="", help="keys to press before the shot, comma-separated (l, m, question_mark)")
+    p.add_argument("--type", dest="typed", default="", help="text to type after the keys (into an open input)")
     a = p.parse_args()
     w, h = (int(x) for x in a.size.split("x"))
-    asyncio.run(shoot(a.out, (w, h), a.view))
+    keys = tuple(k for k in a.keys.split(",") if k)
+    asyncio.run(shoot(a.out, (w, h), a.view, select=a.select, keys=keys, typed=a.typed))
 
 
 if __name__ == "__main__":
